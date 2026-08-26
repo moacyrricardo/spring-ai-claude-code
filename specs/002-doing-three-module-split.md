@@ -1,3 +1,6 @@
+Status: doing
+Branch: moacyrricardo/spec-002-three-module-split
+
 # 002 — Split into three Maven modules
 
 ## Context
