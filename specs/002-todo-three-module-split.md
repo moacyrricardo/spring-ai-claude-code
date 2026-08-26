@@ -48,14 +48,28 @@ they drift apart silently.
   (identical), `ClaudeCodeChatModel` (differs by one override), `ClaudeCodeChatOptions`
   (genuinely different — see the delta table).
 
-**One dependency the core cannot inherit.** `ReplayingClaudeCodeCli` logs through
-`org.apache.commons.logging`, which today arrives transitively from `spring-core` via
-`spring-jcl`. A core module with no Spring dependency must declare it explicitly. Options:
-depend on `org.springframework:spring-jcl` (Spring-authored but free of Spring APIs, and
-what both adapters will already have), depend on `commons-logging:commons-logging`, or drop
-to `java.util.logging` and take no dependency at all. **Recommendation: `spring-jcl`** — it
-keeps one logging facade across all three modules and adds nothing to an adapter's
-classpath that is not already there.
+**Logging: the core takes no dependency at all.** `ReplayingClaudeCodeCli` currently logs
+through `org.apache.commons.logging`, which reaches it only transitively from `spring-core`
+via `spring-jcl`. Rather than declare a facade, the core switches to
+**`java.util.logging`**, keeping the "Jackson only" row above literally true.
+
+The footprint being replaced is one declaration and two call sites, both in
+`ReplayingClaudeCodeCli` — a fixture-replayed `debug` and a fixture-recorded `info`. At that
+size the dependency costs more than the abstraction buys.
+
+Two alternatives were evaluated and rejected:
+
+- **`slf4j-api`** — the ecosystem standard, 69 KB with no transitive dependencies, and
+  already a compile-scope dependency of the current artifact (via
+  `spring-ai-client-chat → json-schema-validator`). Rejected because with no binding on the
+  classpath it silently discards output, which is exactly the plain-JUnit-without-Spring
+  case the standalone core exists to serve. `java.util.logging` always produces output with
+  no configuration, and Spring Boot bridges JUL into the application's logging by default,
+  so Boot consumers lose nothing.
+- **Lombok `@Slf4j`** — not a facade but a code generator that emits an SLF4J logger, so it
+  requires `slf4j-api` anyway and inherits the objection above. It would also add an
+  annotation processor to the build and oblige every contributor to install an IDE plugin,
+  in exchange for removing a single line from a single class.
 
 **Verified API deltas** between 1.1.8 and 2.0.0, from `javap` against both jars:
 
@@ -78,33 +92,103 @@ required in the legacy module too, for the same reason.
 
 **Sharing mechanism.** A top-level `spring-ai-adapter/src/main/java` directory is added to
 both adapter modules' compile roots via `build-helper-maven-plugin:add-source`.
-`ClaudeCodeChatOptions` is *not* in the shared directory — each module carries its own,
-under the same fully-qualified name, so the shared classes compile against whichever is
-present. The same arrangement applies to the shared test sources, so both modules run the
-identical suite.
 
-**Fixtures.** The replay fixtures used by the shared tests live once, in the core module's
-test resources, and are read by both adapters. Identical fixtures across both proves the
-adapters are behaviourally equivalent, which is the real contract.
+**Exactly one class is duplicated: `ClaudeCodeChatOptions`.** Each module carries its own
+under the same fully-qualified name, so shared classes compile against whichever is present.
+The other five adapter files — including `ClaudeCodeChatModel` — are shared.
+
+`ClaudeCodeChatModel` can be shared despite the `getOptions()` difference, because on 2.0 it
+overrides an interface default and on 1.1.8 it is simply an additional public method that
+overrides nothing. The only thing preventing that today is the `@Override` annotation on
+`ClaudeCodeChatModel#getOptions()`, which fails to compile on 1.1.8. **Removing that
+annotation is part of this work**, and it is safe on 2.0: the method still overrides the
+interface default, it is merely no longer asserted to.
+
+**The contract between the two `ClaudeCodeChatOptions` twins.** Because shared code compiles
+against whichever twin is present, both must expose the same surface everywhere shared
+sources and shared tests touch them: the static `merge(ChatOptions, ChatOptions)`, `copy()`,
+`mutate()`, `builder()`, and every getter the model and the properties class read. Only the
+supertype wiring differs — 1.1.8 implements the abstract generic `<T extends ChatOptions> T
+copy()` and a non-generic `Builder`; 2.0 implements `mutate()` and `Builder<B>` with
+`clone()`. The shared tests are the enforcement: they compile and run against both twins, so
+a drift in the shared-visible surface breaks the build rather than diverging quietly.
+
+**Test partition.** The 104 tests split by what they exercise, not by package:
+
+| Where | Tests | Which |
+|---|---|---|
+| Core module | 65 | `ArgumentSpill` 8, `ClaudeCodeCliRequest` 6, `ClaudeCodeCliResponse` 9, `ProcessClaudeCodeCli` 11, `FileSystemFixtureStore` 9, `FixtureKey` 12, `ReplayingClaudeCodeCli` 10 |
+| Shared adapter sources | 32 | `ClaudeCodeChatModel` 14, `DefaultConversationRenderer` 7, `ClaudeCodeChatAutoConfiguration` 8, `OneFixtureManyAssertions` 3 |
+| Duplicated per adapter | 7 | `ClaudeCodeChatOptions` — it tests the twin, so each module needs its own |
+
+Note `OneFixtureManyAssertionsTests` sits in the `replay` package but drives
+`ClaudeCodeChatModel`, so it is an adapter test despite its location and moves with the
+shared sources.
+
+Both adapter modules therefore run the same 32 shared tests plus their own 7 — **not** an
+"identical suite", since the options tests necessarily differ. That is the acceptance bar in
+Validation below.
+
+**Fixtures.** The shared adapter tests use `@TempDir` and record within the test, so they
+carry no checked-in fixtures and need no cross-module resource sharing. Should a committed
+fixture corpus ever be introduced, it must be published from the core module as a
+`test-jar` and consumed by both adapters with `<type>test-jar</type><scope>test</scope>` —
+one module's `src/test/resources` is not otherwise visible to another module.
 
 **Auto-configuration.** Both Boot 3.5 and 4.1 use the same
 `META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports`
 mechanism, so each adapter ships its own copy of that file with no structural difference.
 
-**Build.** The parent POM declares the reactor and shared plugin configuration but pins no
-Spring version; each adapter imports its own BOM. Java 17 stays the target for all three —
-it is the baseline for both Boot 3.5 and Boot 4.1.
+**Build.** The parent is `com.iskeru:claudecode-p-parent`, packaging `pom`, published
+alongside the others because consumers resolving a child need it. Directory layout mirrors
+the artifact names:
 
-**Validation.** The split is behaviour-preserving. The current 104-test suite must pass
-unchanged against the 2.0 adapter, and the shared subset must pass against the 1.1 adapter,
-before the split is considered done.
+```
+claudecode-p-parent/            (pom.xml — reactor + shared plugin config)
+├── claudecode-cli/             core
+├── spring-ai-adapter/          shared sources only; not a module, added via build-helper
+├── spring-ai-claudecode-p/     Spring AI 2.0 / Boot 4.1
+└── spring-ai-claudecode-p-1x/  Spring AI 1.1 / Boot 3.5
+```
+
+All four artifacts share one version and release together; a consumer never has to reason
+about which core version pairs with which adapter. The parent declares the reactor and
+shared plugin configuration but pins no Spring version — each adapter imports its own BOM.
+Java 17 stays the target for all three, being the baseline for both Boot 3.5 and Boot 4.1.
+
+**Validation.** The split is behaviour-preserving. It is done when:
+
+1. The core module's 65 tests pass, with no Spring AI or Spring Boot dependency on its
+   compile or test classpath — enforced by `maven-enforcer-plugin`'s `bannedDependencies`,
+   so the Spring-free claim cannot rot silently.
+2. The 2.0 adapter passes all 39 of its tests (32 shared + 7 own), unchanged in content from
+   today's suite apart from package/module moves.
+3. The 1.1 adapter passes the same 32 shared tests plus its own 7.
+4. Both adapters' auto-configuration tests pass, proving each Boot generation still
+   contributes the model bean.
+
+Total across the reactor is 104 + 7 = 111, the increase being the duplicated options tests.
 
 ## Known Gaps
 
 - **Unverified beyond the table above.** Only the types the code touches today were
-  compared. `ChatResponseMetadata` / `ChatGenerationMetadata` builder surfaces and
-  `DefaultUsage` constructors are *assumed* compatible and will be confirmed by compiling
-  the legacy module — the first build is the test.
+  compared, and only across the two Spring **AI** jars. `ChatResponseMetadata` /
+  `ChatGenerationMetadata` builder surfaces and `DefaultUsage` constructors are *assumed*
+  compatible and will be confirmed by compiling the legacy module — the first build is the
+  test.
+- **The Spring Boot 3.5 → 4.1 boundary is unverified.** Calling
+  `ClaudeCodeChatAutoConfiguration` and `ClaudeCodeChatProperties` "identical" rests on the
+  annotation and auto-configuration surfaces being unchanged across a Boot **major**
+  version. That was not checked with `javap` the way the Spring AI delta was. If
+  `@ConditionalOn*`, `@ConfigurationProperties` binding, or the `AutoConfiguration.imports`
+  contract moved, those two files join `ClaudeCodeChatOptions` as duplicated — which changes
+  effort, not the design.
+- **`RenderedPrompt` and the renderer belong to the adapter, not the core.** They handle
+  Spring AI `Message` types, so they sit in the shared adapter sources with
+  `ConversationRenderer`. This matters for spec 001, whose media work spans both sides of
+  the split: the `MediaAttachment` type, the fixture key, and side-car storage are core,
+  while media *collection* from `Message` is adapter. 001's Known Gaps records the same
+  seam from its side.
 - **Spring AI 1.0.x is not targeted.** Only 1.1.x. Supporting 1.0 would likely mean a
   fourth module; no demand established.
 - **No cross-version integration test.** Nothing proves an application on Boot 3.5 wires
@@ -116,6 +200,13 @@ before the split is considered done.
   ever published for standalone use.
 - **Release process gets heavier.** Three artifacts version and publish together, and a
   core change now requires rebuilding both adapters.
-- **Interacts with 001.** If media support lands first, it is implemented once in core and
-  the adapters only translate `org.springframework.ai.content.Media` — which sits in the
-  same package in both versions, so the split does not complicate it.
+- **This spec is built first, before 001.** The order is settled. This is a
+  behaviour-preserving refactor that the existing 104 tests already verify, so doing it on
+  today's smaller codebase is the lower-risk sequence; spec 001 is then written against the
+  three-module structure and lands once, in its final home. `Media` and `MediaContent` sit
+  in the same package in both Spring AI versions, so the split does not constrain what 001
+  can do afterwards.
+
+  Practical consequence: this spec is built against the codebase *without* media support,
+  so the module contents listed above are complete as written — no placeholder is needed for
+  001's types.
