@@ -1,4 +1,4 @@
-Status: doing
+Status: done
 Branch: moacyrricardo/spec-002-three-module-split
 
 # 002 — Split into three Maven modules
@@ -213,3 +213,78 @@ Total across the reactor is 104 + 7 = 111, the increase being the duplicated opt
   Practical consequence: this spec is built against the codebase *without* media support,
   so the module contents listed above are complete as written — no placeholder is needed for
   001's types.
+## Implementation Notes
+
+Built on `moacyrricardo/spec-002-three-module-split`, PR #1. The split is behaviour-preserving
+and landed as written; four things differed.
+
+### A second class had to be duplicated: `ClaudeCodeUsage`
+
+The spec says "Exactly one class is duplicated: `ClaudeCodeChatOptions`." That turned out to be
+one short, for the reason its own Known Gaps predicted — `DefaultUsage` was assumed compatible
+and was not. `javap` on both jars:
+
+| Member | 1.1.8 | 2.0.0 |
+|---|---|---|
+| `DefaultUsage(Integer, Integer, Integer, Object, Long, Long)` | absent | present |
+| `Usage.getCacheReadInputTokens()` / `getCacheWriteInputTokens()` | absent | present |
+
+`ClaudeCodeChatModel#toUsage` used the six-argument constructor, so the shared model could not
+compile on 1.1. Duplicating a 250-line model to save a five-line factory would have defeated the
+design, so construction moved behind `ClaudeCodeUsage` — a second per-adapter twin whose entire
+surface is `static Usage of(int, int, ClaudeCodeCliResponse.Usage, long, long)` — and `toUsage`
+now returns `Usage` rather than `DefaultUsage`. The 1.1 twin folds cache tokens into the prompt
+count exactly as 2.0 does and leaves the individual counts reachable via `getNativeUsage()`.
+
+Consequently two assertions moved: `ClaudeCodeChatModelTests.mapsUsageWithCacheTokensFolded...`
+keeps the portable prompt/completion/total assertions, and the two cache-getter assertions became
+a per-module `ClaudeCodeUsageTests` — the 2.0 one asserting the typed getters, the 1.1 one
+asserting the same numbers through the native usage. This is the only behaviour a consumer can
+observe differing between the adapters, and it is pinned on both sides.
+
+Everything else the spec listed as identical really was. The two questions it left open both
+resolved in favour of sharing: `ClaudeCodeChatAutoConfiguration` and `ClaudeCodeChatProperties`
+needed no change across the Boot 3.5 → 4.1 major, and the `ChatResponseMetadata` /
+`ChatGenerationMetadata` builder surfaces are identical. The legacy module compiled on its first
+build.
+
+### `RecordingFakeCli` forced the core to publish a test-jar
+
+The spec anticipated the mechanism for a future fixture corpus; it was needed immediately.
+`RecordingFakeCli` fakes the core's own `ClaudeCodeCli` but is driven by the core's tests *and*
+both adapters' tests, and one module's test sources are invisible to another. `claudecode-cli`
+therefore publishes a `test-jar`, consumed by both adapters as
+`<type>test-jar</type><scope>test</scope>`.
+
+### The test count in Validation was wrong
+
+The spec's "Total across the reactor is 104 + 7 = 111" undercounts: its own Validation items 2
+and 3 require the 32 shared tests to run in **both** adapters, which makes the figure it
+describes 65 + (32+7) + (32+7) = **143**. Observed: **153** — 65 core + 44 per adapter. The extra
+10 are guards added with the split, 4 shared (so ×2) plus 1 per module:
+
+- `ClaudeCodeChatOptionsTwinContractTests` (3, shared) — pins the surface the two options twins
+  must keep identical, including the parts only a consumer touches, which shared code would not
+  fail to compile over.
+- `AutoConfigurationImportsTests` (1, shared) — each module ships its own
+  `AutoConfiguration.imports`, because resources are not shared; losing it is invisible to the
+  `ApplicationContextRunner` tests, which register the configuration class explicitly.
+- `ClaudeCodeUsageTests` (1 per module) — the cache token assertions described above.
+
+The `bannedDependencies` enforcer rule of Validation item 1 was verified the same way rather
+than assumed: declaring `spring-core` in the core module fails the build at `validate`.
+
+### Live tests stayed in the 2.0 adapter only
+
+Shared test sources compile into both modules, so `@Tag("live")` tests placed there would double
+the subscription spend of every `mvn test -Plive` run. `ClaudeCodeChatModelLiveTests` and
+`RecordReplayLiveTests` live in `spring-ai-claudecode-p`. The 1.x adapter therefore has no live
+proof — a narrower instance of the "no cross-version integration test" gap already recorded
+above. Its 44 offline tests, including the auto-configuration ones, are the proxy.
+
+### Not done here
+
+`spring-ai-adapter` has no POM by design, so IDEs index it only through the two modules that
+add it as a source root. Release/CI for four coordinated artifacts remains undecided and
+unautomated (the repo has no CI workflow), and Spring AI 1.0.x support and the core's package
+rename stay deferred, as the spec's Known Gaps set out.
