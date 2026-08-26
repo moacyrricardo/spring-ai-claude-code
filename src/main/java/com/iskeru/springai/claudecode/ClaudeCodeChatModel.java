@@ -110,7 +110,15 @@ public class ClaudeCodeChatModel implements ChatModel {
 		return Flux.defer(() -> Flux.just(call(prompt)));
 	}
 
-	@Override
+	/**
+	 * The model's default options.
+	 *
+	 * <p>
+	 * Deliberately not annotated {@code @Override}: on Spring AI 2.0 this overrides
+	 * {@code ChatModel.getOptions()}, but that method does not exist on 1.1.x, where this
+	 * is simply an extra public method. Dropping the annotation is what lets this one
+	 * source file compile against both generations.
+	 */
 	public ChatOptions getOptions() {
 		return this.defaultOptions.copy();
 	}
