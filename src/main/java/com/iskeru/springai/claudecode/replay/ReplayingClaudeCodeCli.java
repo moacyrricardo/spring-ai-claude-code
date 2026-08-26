@@ -1,9 +1,7 @@
 package com.iskeru.springai.claudecode.replay;
 
 import java.util.Optional;
-
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import java.util.logging.Logger;
 
 import com.iskeru.springai.claudecode.ClaudeCodeException;
 import com.iskeru.springai.claudecode.cli.ClaudeCodeCli;
@@ -30,7 +28,11 @@ import com.iskeru.springai.claudecode.cli.ClaudeCodeCliResponse;
  */
 public class ReplayingClaudeCodeCli implements ClaudeCodeCli {
 
-	private static final Log logger = LogFactory.getLog(ReplayingClaudeCodeCli.class);
+	// java.util.logging, deliberately: this class lives in the Spring-free core, whose only
+	// dependency is Jackson. JUL needs no binding to produce output — which matters for the
+	// plain-JUnit-without-Spring case — and Spring Boot bridges it into the application's
+	// logging anyway.
+	private static final Logger logger = Logger.getLogger(ReplayingClaudeCodeCli.class.getName());
 
 	private final ClaudeCodeCli delegate;
 
@@ -59,7 +61,7 @@ public class ReplayingClaudeCodeCli implements ClaudeCodeCli {
 		if (this.mode == ReplayMode.REPLAY || this.mode == ReplayMode.AUTO) {
 			Optional<ClaudeCodeCliResponse> recorded = this.store.load(key);
 			if (recorded.isPresent()) {
-				logger.debug("Replaying Claude Code fixture " + key);
+				logger.fine("Replaying Claude Code fixture " + key);
 				return recorded.get().asReplayed();
 			}
 			if (this.mode == ReplayMode.REPLAY) {
