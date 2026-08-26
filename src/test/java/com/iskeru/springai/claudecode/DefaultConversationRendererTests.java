@@ -7,6 +7,9 @@ import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.content.Media;
+import org.springframework.core.io.ByteArrayResource;
+import org.springframework.util.MimeTypeUtils;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -66,6 +69,20 @@ class DefaultConversationRendererTests {
 		assertThatThrownBy(() -> this.renderer.render(List.of(new SystemMessage("Be terse."))))
 			.isInstanceOf(ClaudeCodeException.class)
 			.hasMessageContaining("no user message");
+	}
+
+
+	@Test
+	void refusesMediaRatherThanSilentlyAnsweringFromTheTextAlone() {
+		UserMessage withImage = UserMessage.builder()
+			.text("What is in this picture?")
+			.media(new Media(MimeTypeUtils.IMAGE_PNG, new ByteArrayResource("not-really-a-png".getBytes())))
+			.build();
+
+		assertThatThrownBy(() -> this.renderer.render(List.of(withImage)))
+			.isInstanceOf(ClaudeCodeException.class)
+			.hasMessageContaining("does not yet")
+			.hasMessageContaining("silently ignore");
 	}
 
 }

@@ -5,6 +5,7 @@ import java.util.List;
 
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.MessageType;
+import org.springframework.ai.content.MediaContent;
 
 /**
  * The default {@link ConversationRenderer}.
@@ -36,6 +37,7 @@ public class DefaultConversationRenderer implements ConversationRenderer {
 		List<Message> turns = new ArrayList<>();
 
 		for (Message message : messages) {
+			rejectMedia(message);
 			if (message.getMessageType() == MessageType.SYSTEM) {
 				String text = message.getText();
 				if (text != null && !text.isBlank()) {
@@ -60,6 +62,23 @@ public class DefaultConversationRenderer implements ConversationRenderer {
 		}
 
 		return new RenderedPrompt(systemPrompt, renderTranscript(turns));
+	}
+
+	/**
+	 * Media is not yet forwarded to the CLI. Rendering only {@code getText()} would drop
+	 * the attachment and still return a confident-looking answer built from the
+	 * surrounding text — a test that passes without ever having exercised the image. Fail
+	 * instead, and let a replacement {@link ConversationRenderer} opt in once support
+	 * lands.
+	 */
+	protected void rejectMedia(Message message) {
+		if (message instanceof MediaContent content && !content.getMedia().isEmpty()) {
+			throw new ClaudeCodeException(
+					("This %s carries %d media attachment(s), which the Claude Code CLI model does not yet "
+							+ "forward. Answering from the text alone would silently ignore them. Remove the "
+							+ "media, or supply a ConversationRenderer that handles it.")
+						.formatted(message.getMessageType(), content.getMedia().size()));
+		}
 	}
 
 	protected String renderTranscript(List<Message> turns) {
