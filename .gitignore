@@ -1,0 +1,13 @@
+target/
+*.log
+
+# IDEs
+.idea/
+*.iml
+.vscode/
+.settings/
+.classpath
+.project
+
+# Claude Code local settings
+.claude/settings.local.json
