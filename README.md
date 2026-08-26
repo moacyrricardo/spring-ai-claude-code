@@ -108,6 +108,60 @@ deliberately excluded, since a spend guard is not a semantic input.
 A replayed response carries `replayed=true` in its generation metadata. Its `usage` and
 `totalCostUsd` describe the original recording, not the replay, which cost nothing.
 
+## When replay pays
+
+Replay is not only about re-running a suite tomorrow. A fixture is keyed by the *request*,
+not by the caller, so anything issuing the same prompt shares one recording.
+
+**One prompt, many assertions.** This is the common shape and the one worth designing for.
+A single interesting response usually deserves several independent checks — the text, the
+token accounting, the finish reason, how your parser maps it — and each belongs in its own
+test with its own name and its own failure message. Written naively that is one model call
+per test. Here it is one call total: the first records, the rest replay, *within the same
+suite run*. Splitting one fat assertion into five focused ones costs nothing.
+
+```java
+// Three tests, one fixture, one model call.
+assertThat(model.call(prompt).getResult().getOutput().getText()).contains("refund");
+assertThat(model.call(prompt).getMetadata().getUsage().getTotalTokens()).isPositive();
+assertThat(model.call(prompt).getResult().getMetadata().getFinishReason()).isEqualTo("end_turn");
+```
+
+`OneFixtureManyAssertionsTests` pins this behaviour.
+
+**The same suite over time.** One recording amortises across every push, every developer,
+every watch-mode rerun — thousands of executions from a single call.
+
+**Testing the code around the model.** Response parsing, retry logic, template rendering,
+downstream branching. The model call is a fixed input; you are not testing Claude.
+
+**The inner loop.** Re-running one test forty times while fixing a parser is instant and
+free, and the response stops shifting under you while you debug.
+
+**Onboarding and offline work.** In `replay` mode a new contributor runs the suite with no
+Claude Code install, no authentication, and no subscription.
+
+### What has to stay stable
+
+The key hashes the prompt exactly. A prompt carrying `Instant.now()`, a random UUID, or a
+generated identifier misses on **every** run — you record fixtures that can never be hit
+again, and `replay` mode then fails permanently.
+
+Inject a fixed `Clock`, seed generators, use stable identifiers. This is ordinary
+deterministic-test discipline; a prompt that cannot be made stable was not a reliable test
+to begin with.
+
+### When not to replay
+
+- **Evaluating model quality.** If the question is "is Claude still good at this?", a
+  recorded answer answers nothing. Use `@Tag("live")` and `mvn test -Plive`.
+- **Verifying a model upgrade.** Stale fixtures hide precisely the change you are looking
+  for. Re-record with `record` mode.
+- **Testing behaviour under varied phrasing** — where non-determinism is the subject.
+
+The rule of thumb: `replay` for tests that happen to call an LLM, live for tests about the
+LLM. Nearly all of them are the former.
+
 ## Agent behaviour is off by default
 
 Claude Code is a coding agent; a `ChatModel` is not. Unless told otherwise this model runs
