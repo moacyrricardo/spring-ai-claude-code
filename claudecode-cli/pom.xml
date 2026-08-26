@@ -26,6 +26,38 @@
 	<build>
 		<plugins>
 			<!--
+			  The Spring-free claim is the reason this module exists, so it is enforced
+			  rather than documented: any Spring artifact arriving on the compile or test
+			  classpath, directly or transitively, fails the build.
+			-->
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-enforcer-plugin</artifactId>
+				<executions>
+					<execution>
+						<id>ban-spring</id>
+						<phase>validate</phase>
+						<goals>
+							<goal>enforce</goal>
+						</goals>
+						<configuration>
+							<rules>
+								<bannedDependencies>
+									<searchTransitive>true</searchTransitive>
+									<excludes>
+										<exclude>org.springframework:*</exclude>
+										<exclude>org.springframework.ai:*</exclude>
+										<exclude>org.springframework.boot:*</exclude>
+									</excludes>
+									<message>claudecode-cli is the Spring-free core: it depends on Jackson and nothing else. Anything needing Spring AI or Spring Boot belongs in an adapter module.</message>
+								</bannedDependencies>
+							</rules>
+							<fail>true</fail>
+						</configuration>
+					</execution>
+				</executions>
+			</plugin>
+			<!--
 			  `RecordingFakeCli` is a fake of this module's own `ClaudeCodeCli`, and both
 			  adapters' tests drive the model through it. One module's test sources are not
 			  visible to another, so they are published as a test-jar.
