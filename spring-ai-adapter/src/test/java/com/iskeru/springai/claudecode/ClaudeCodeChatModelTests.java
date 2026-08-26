@@ -97,8 +97,8 @@ class ClaudeCodeChatModelTests {
 		assertThat(usage.getPromptTokens()).as("185 uncached + 3289 cache read + 7933 cache write").isEqualTo(11407);
 		assertThat(usage.getCompletionTokens()).isEqualTo(5);
 		assertThat(usage.getTotalTokens()).isEqualTo(11412);
-		assertThat(usage.getCacheReadInputTokens()).isEqualTo(3289L);
-		assertThat(usage.getCacheWriteInputTokens()).isEqualTo(7933L);
+		// How the cache token pair itself is exposed is version-specific; each adapter
+		// asserts it in its own ClaudeCodeUsageTests.
 	}
 
 	@Test

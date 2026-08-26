@@ -16,7 +16,7 @@ import com.iskeru.springai.claudecode.cli.ClaudeCodeCliResponse;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.metadata.ChatGenerationMetadata;
 import org.springframework.ai.chat.metadata.ChatResponseMetadata;
-import org.springframework.ai.chat.metadata.DefaultUsage;
+import org.springframework.ai.chat.metadata.Usage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
@@ -183,17 +183,21 @@ public class ClaudeCodeChatModel implements ChatModel {
 	 * count; the untouched CLI numbers remain available via
 	 * {@link org.springframework.ai.chat.metadata.Usage#getNativeUsage()} for tests that
 	 * need to distinguish them.
+	 *
+	 * <p>
+	 * Construction goes through {@link ClaudeCodeUsage}, which is duplicated per adapter:
+	 * only Spring AI 2.0's {@code DefaultUsage} carries the cache token pair as first-class
+	 * fields.
 	 */
-	protected DefaultUsage toUsage(ClaudeCodeCliResponse.Usage usage) {
+	protected Usage toUsage(ClaudeCodeCliResponse.Usage usage) {
 		if (usage == null) {
-			return new DefaultUsage(0, 0, 0, null, 0L, 0L);
+			return ClaudeCodeUsage.of(0, 0, null, 0L, 0L);
 		}
 		long cacheRead = orZero(usage.cacheReadInputTokens());
 		long cacheWrite = orZero(usage.cacheCreationInputTokens());
 		int promptTokens = (int) (orZero(usage.inputTokens()) + cacheRead + cacheWrite);
 		int completionTokens = (int) orZero(usage.outputTokens());
-		return new DefaultUsage(promptTokens, completionTokens, promptTokens + completionTokens, usage, cacheRead,
-				cacheWrite);
+		return ClaudeCodeUsage.of(promptTokens, completionTokens, usage, cacheRead, cacheWrite);
 	}
 
 	private void warnAboutUnsupportedOptions(ClaudeCodeChatOptions options) {
