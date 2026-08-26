@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -36,6 +37,13 @@ public class ProcessClaudeCodeCli implements ClaudeCodeCli {
 	 */
 	private static final Duration PUMP_DRAIN_GRACE = Duration.ofSeconds(10);
 
+	/**
+	 * Arguments at or above this many bytes are written to a temporary file instead of
+	 * being passed inline. Comfortably under the 128 KiB per-argument ceiling, leaving
+	 * room for the rest of the command and the environment, which share a separate total.
+	 */
+	private static final int DEFAULT_ARGUMENT_SPILL_THRESHOLD = 64 * 1024;
+
 	private final String executable;
 
 	private final Duration timeout;
@@ -48,6 +56,8 @@ public class ProcessClaudeCodeCli implements ClaudeCodeCli {
 
 	private final ObjectMapper objectMapper;
 
+	private final int argumentSpillThreshold;
+
 	protected ProcessClaudeCodeCli(Builder builder) {
 		this.executable = builder.executable;
 		this.timeout = builder.timeout;
@@ -55,6 +65,7 @@ public class ProcessClaudeCodeCli implements ClaudeCodeCli {
 		this.environment = Map.copyOf(builder.environment);
 		this.sessionPersistence = builder.sessionPersistence;
 		this.objectMapper = builder.objectMapper;
+		this.argumentSpillThreshold = builder.argumentSpillThreshold;
 	}
 
 	public static Builder builder() {
@@ -63,7 +74,24 @@ public class ProcessClaudeCodeCli implements ClaudeCodeCli {
 
 	@Override
 	public ClaudeCodeCliResponse execute(ClaudeCodeCliRequest request) {
-		List<String> command = buildCommand(request);
+		List<Path> spillFiles = new ArrayList<>();
+		try {
+			return execute(request, spillFiles);
+		}
+		finally {
+			for (Path file : spillFiles) {
+				try {
+					Files.deleteIfExists(file);
+				}
+				catch (IOException ex) {
+					// A leftover temp file is not worth failing a completed call over.
+				}
+			}
+		}
+	}
+
+	private ClaudeCodeCliResponse execute(ClaudeCodeCliRequest request, List<Path> spillFiles) {
+		List<String> command = ArgumentSpill.apply(buildCommand(request), this.argumentSpillThreshold, spillFiles);
 
 		ProcessBuilder processBuilder = new ProcessBuilder(command);
 		if (this.workingDirectory != null) {
@@ -76,8 +104,7 @@ public class ProcessClaudeCodeCli implements ClaudeCodeCli {
 			process = processBuilder.start();
 		}
 		catch (IOException ex) {
-			throw new ClaudeCodeException("Could not start the Claude Code CLI (`%s`). Is it installed and on PATH?"
-				.formatted(this.executable), ex);
+			throw new ClaudeCodeException(startFailureMessage(command, ex), ex);
 		}
 
 		AtomicReference<String> stdout = new AtomicReference<>("");
@@ -136,6 +163,23 @@ public class ProcessClaudeCodeCli implements ClaudeCodeCli {
 		return response;
 	}
 
+	/**
+	 * Distinguishes "the binary is missing" from "the kernel refused this command line".
+	 * They arrive as the same {@link IOException}, and blaming the install for an
+	 * oversized argument sends people to reinstall a CLI that was never the problem.
+	 */
+	private String startFailureMessage(List<String> command, IOException cause) {
+		String detail = String.valueOf(cause.getMessage());
+		if (detail.contains("Argument list too long") || detail.contains("error=7")) {
+			return ("The Claude Code CLI could not be started because the command line is too long for this "
+					+ "operating system, not because it is missing.%nArgument sizes:%n%s%n"
+					+ "The prompt itself is sent on stdin and is never the cause. Shorten the offending value, "
+					+ "or lower ProcessClaudeCodeCli.Builder#argumentSpillThreshold so it is written to a file.")
+				.formatted(ArgumentSpill.describeSizes(command));
+		}
+		return "Could not start the Claude Code CLI (`%s`). Is it installed and on PATH?".formatted(this.executable);
+	}
+
 	protected List<String> buildCommand(ClaudeCodeCliRequest request) {
 		List<String> command = new ArrayList<>();
 		command.add(this.executable);
@@ -179,12 +223,25 @@ public class ProcessClaudeCodeCli implements ClaudeCodeCli {
 
 		private ObjectMapper objectMapper = new ObjectMapper();
 
+		private int argumentSpillThreshold = DEFAULT_ARGUMENT_SPILL_THRESHOLD;
+
 		/**
 		 * Path to (or name of) the {@code claude} binary. Defaults to {@code claude},
 		 * resolved on {@code PATH}.
 		 */
 		public Builder executable(String executable) {
 			this.executable = executable;
+			return this;
+		}
+
+		/**
+		 * Byte size at which a system-prompt argument is written to a temporary file
+		 * rather than passed inline, to stay under the operating system's per-argument
+		 * limit. Defaults to 64 KiB. Spilling is invisible to the CLI and to fixture
+		 * keys.
+		 */
+		public Builder argumentSpillThreshold(int argumentSpillThreshold) {
+			this.argumentSpillThreshold = argumentSpillThreshold;
 			return this;
 		}
 

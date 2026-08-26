@@ -165,6 +165,16 @@ Worth knowing before you write assertions against this.
   `ConversationRenderer` if your assertions need a different shape.
 - **Process overhead.** Expect a few hundred milliseconds of startup per call on top of
   inference — one more reason to replay in CI.
+- **Prompt size is bounded by the model, not the command line.** The prompt travels on the
+  CLI's stdin, so it is not subject to any `argv` limit — verified at 100 KB against the
+  real binary and at 512 KiB through the process plumbing. The ceiling is the model's
+  context window and the configured timeout. Note that a large prompt is expensive live
+  (100 KB cost $0.15 in one call), which is exactly where `replay` earns its keep.
+- **Options that become command-line flags are bounded.** Linux caps a single `argv` entry
+  at 128 KiB. A `systemPrompt` or `appendSystemPrompt` above 64 KiB is therefore written
+  to a temporary file and passed as `--system-prompt-file`; this is invisible to the CLI
+  and cannot change a fixture key. `jsonSchema` has no file form, so an oversized schema
+  fails with an explicit error rather than an opaque `exec` failure.
 
 ## Building
 

@@ -140,6 +140,50 @@ class ProcessClaudeCodeCliTests {
 			.hasMessageContaining("Is it installed and on PATH?");
 	}
 
+	@Test
+	void writesAnOversizedSystemPromptToAFileTheCliCanRead() throws Exception {
+		Path stub = stubCapturingTheSpilledSystemPrompt(RecordingFakeCli.envelope("ok"));
+		String huge = "S".repeat(200 * 1024);
+
+		ProcessClaudeCodeCli.builder()
+			.executable(stub.toString())
+			.timeout(Duration.ofSeconds(30))
+			.environment(captureEnvironment())
+			.build()
+			.execute(ClaudeCodeCliRequest.builder().prompt("hi").systemPrompt(huge).build());
+
+		List<String> arguments = capturedArguments();
+		assertThat(arguments).contains("--system-prompt-file").doesNotContain("--system-prompt", huge);
+
+		// The CLI must be handed the identical text, just by a different route. The stub
+		// copies it out while the process is running, since the file is deleted after.
+		assertThat(Files.readString(this.captureDir.resolve("system-prompt.txt"))).isEqualTo(huge);
+
+		Path spilled = Path.of(arguments.get(arguments.indexOf("--system-prompt-file") + 1));
+		assertThat(spilled).as("the temporary file is removed once the call completes").doesNotExist();
+	}
+
+	@Test
+	void diagnosesAnOverlongCommandLineWithoutBlamingTheInstall() throws Exception {
+		Path stub = stubEchoing(RecordingFakeCli.envelope("ok"));
+		// Spilling disabled, so the oversized value really does reach exec().
+		ProcessClaudeCodeCli cli = ProcessClaudeCodeCli.builder()
+			.executable(stub.toString())
+			.timeout(Duration.ofSeconds(30))
+			.argumentSpillThreshold(Integer.MAX_VALUE)
+			.environment(captureEnvironment())
+			.build();
+
+		assertThatThrownBy(() -> cli
+			.execute(ClaudeCodeCliRequest.builder().prompt("hi").systemPrompt("S".repeat(300 * 1024)).build()))
+			.isInstanceOf(ClaudeCodeException.class)
+			.hasMessageContaining("command line is too long")
+			.hasMessageContaining("not because it is missing")
+			.hasMessageContaining("sent on stdin")
+			.as("the old message sent people to reinstall a CLI that was fine")
+			.hasMessageNotContaining("Is it installed and on PATH?");
+	}
+
 	private ProcessClaudeCodeCli cli(Path executable, Duration timeout) {
 		return ProcessClaudeCodeCli.builder()
 			.executable(executable.toString())
@@ -163,6 +207,22 @@ class ProcessClaudeCodeCliTests {
 		return stub("""
 				for arg in "$@"; do printf '%%s\\n' "$arg"; done > "$CAPTURE_DIR/args.txt"
 				cat > "$CAPTURE_DIR/stdin.txt"
+				cat '%s'
+				""".formatted(payloadFile));
+	}
+
+	/** As {@link #stubEchoing}, plus a copy of the spilled system prompt while it exists. */
+	private Path stubCapturingTheSpilledSystemPrompt(String payload) throws IOException {
+		Path payloadFile = this.temp.resolve("payload.json");
+		Files.writeString(payloadFile, payload, StandardCharsets.UTF_8);
+		return stub("""
+				for arg in "$@"; do printf '%%s\\n' "$arg"; done > "$CAPTURE_DIR/args.txt"
+				cat > "$CAPTURE_DIR/stdin.txt"
+				prev=""
+				for arg in "$@"; do
+				  if [ "$prev" = "--system-prompt-file" ]; then cp "$arg" "$CAPTURE_DIR/system-prompt.txt"; fi
+				  prev="$arg"
+				done
 				cat '%s'
 				""".formatted(payloadFile));
 	}
