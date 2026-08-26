@@ -15,6 +15,7 @@
 	<modules>
 		<module>claudecode-cli</module>
 		<module>spring-ai-claudecode-p</module>
+		<module>spring-ai-claudecode-p-1x</module>
 	</modules>
 
 	<properties>
