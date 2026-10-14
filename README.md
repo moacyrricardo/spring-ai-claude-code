@@ -16,11 +16,16 @@ processes the machine will tolerate.
 ## Requirements
 
 - Java 17+
-- Spring AI 2.0.x
+- Spring AI 2.0.x **or** 1.1.x — one adapter per generation, see Coordinates
 - Claude Code installed and authenticated (`claude --version`) — except in `replay` mode,
   which needs neither
 
 ## Coordinates
+
+Three artifacts, one version, released together. Pick the adapter that matches the Spring AI
+your application is already on; it brings the core with it.
+
+Spring AI 2.0.x / Spring Boot 4.1.x:
 
 ```xml
 <dependency>
@@ -31,7 +36,37 @@ processes the machine will tolerate.
 </dependency>
 ```
 
-Everything lives under `com.iskeru.springai.claudecode`.
+Spring AI 1.1.x / Spring Boot 3.5.x — same package names, same behaviour:
+
+```xml
+<dependency>
+    <groupId>com.iskeru</groupId>
+    <artifactId>spring-ai-claudecode-p-1x</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <scope>test</scope>
+</dependency>
+```
+
+The CLI transport, the response envelope and the whole record/replay layer carry no Spring
+types at all, so they ship separately and can be used from a plain JUnit test with no Spring
+on the classpath — the module depends on Jackson and nothing else, and the build fails if
+that ever stops being true:
+
+```xml
+<dependency>
+    <groupId>com.iskeru</groupId>
+    <artifactId>claudecode-cli</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <scope>test</scope>
+</dependency>
+```
+
+Everything lives under `com.iskeru.springai.claudecode`, whichever artifact it came from.
+
+The one behaviour difference between the adapters: on 2.0 the CLI's cache token counts are
+exposed as `Usage.getCacheReadInputTokens()` / `getCacheWriteInputTokens()`; 1.1's `Usage` has
+no such fields, so there they are reachable through `Usage.getNativeUsage()` instead. Both
+fold cache tokens into the prompt count identically.
 
 ## Quick start
 
@@ -232,11 +267,33 @@ Worth knowing before you write assertions against this.
 
 ## Building
 
+```
+claudecode-p-parent/              reactor and shared plugin configuration
+├── claudecode-cli/               the core: CLI, envelope, record/replay — Jackson only
+├── spring-ai-adapter/            adapter sources shared by both modules below; not a module
+├── spring-ai-claudecode-p/       Spring AI 2.0 / Boot 4.1
+└── spring-ai-claudecode-p-1x/    Spring AI 1.1 / Boot 3.5
+```
+
+`spring-ai-adapter` has no POM: both adapter modules add its `src/main/java` and
+`src/test/java` to their own compile roots via `build-helper-maven-plugin`, so the adapter is
+one set of sources compiled twice rather than a copy that drifts. Only
+`ClaudeCodeChatOptions` and `ClaudeCodeUsage` exist once per module, under the same
+fully-qualified names, because their Spring AI supertypes genuinely differ between the
+generations. The shared tests run in both modules and are what keeps the two twins in step.
+
 ```bash
-mvn test          # unit tests; no CLI needed, nothing is spent
+mvn test          # whole reactor; no CLI needed, nothing is spent
 mvn test -Plive   # end-to-end against the real binary; consumes subscription usage
 mvn install
+
+# one module at a time — -am is required, the core is not installed yet
+mvn -pl claudecode-cli test
+mvn -pl spring-ai-claudecode-p-1x -am test
 ```
+
+`-Plive` tests live in `spring-ai-claudecode-p` only: shared test sources compile into both
+adapters, so putting them there would spend subscription usage twice per run.
 
 ## Design
 
