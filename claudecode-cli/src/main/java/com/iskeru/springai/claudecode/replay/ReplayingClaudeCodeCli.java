@@ -1,6 +1,9 @@
 package com.iskeru.springai.claudecode.replay;
 
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
 import java.util.logging.Logger;
 
 import com.iskeru.springai.claudecode.ClaudeCodeException;
@@ -40,6 +43,8 @@ public class ReplayingClaudeCodeCli implements ClaudeCodeCli {
 
 	private final ReplayMode mode;
 
+	private final ConcurrentHashMap<String, CompletableFuture<ClaudeCodeCliResponse>> inFlight = new ConcurrentHashMap<>();
+
 	protected ReplayingClaudeCodeCli(Builder builder) {
 		this.delegate = builder.delegate;
 		this.store = builder.store;
@@ -69,15 +74,55 @@ public class ReplayingClaudeCodeCli implements ClaudeCodeCli {
 			}
 		}
 
-		if (this.delegate == null) {
-			throw new ClaudeCodeException(
-					"No fixture for key %s and no CLI delegate configured to record one.".formatted(key));
+		if (this.mode == ReplayMode.AUTO) {
+			return singleFlight(key, request);
 		}
+		return record(key, request);
+	}
 
+	private ClaudeCodeCliResponse record(String key, ClaudeCodeCliRequest request) {
 		ClaudeCodeCliResponse response = this.delegate.execute(request);
 		this.store.save(key, request, response);
 		logger.info("Recorded Claude Code fixture " + key);
 		return response;
+	}
+
+	private ClaudeCodeCliResponse singleFlight(String key, ClaudeCodeCliRequest request) {
+		CompletableFuture<ClaudeCodeCliResponse> leader = new CompletableFuture<>();
+		CompletableFuture<ClaudeCodeCliResponse> existing = this.inFlight.putIfAbsent(key, leader);
+		if (existing != null) {
+			try {
+				return existing.get().asReplayed();
+			}
+			catch (InterruptedException ex) {
+				Thread.currentThread().interrupt();
+				throw new ClaudeCodeException("Interrupted while awaiting Claude Code recording " + key, ex);
+			}
+			catch (ExecutionException ex) {
+				throw propagate(ex.getCause());
+			}
+		}
+		try {
+			Optional<ClaudeCodeCliResponse> recorded = this.store.load(key);
+			ClaudeCodeCliResponse response = recorded.isPresent() ? recorded.get().asReplayed() : record(key, request);
+			leader.complete(response);
+			return response;
+		}
+		catch (Throwable ex) {
+			leader.completeExceptionally(ex);
+			throw propagate(ex);
+		}
+		finally {
+			this.inFlight.remove(key, leader);
+		}
+	}
+
+	private static RuntimeException propagate(Throwable failure) {
+		if (failure instanceof Error error) {
+			throw error;
+		}
+		return failure instanceof RuntimeException runtime ? runtime
+				: new ClaudeCodeException("Claude Code recording failed", failure);
 	}
 
 	/** The mode this instance is operating in. */

@@ -41,9 +41,8 @@ import org.springframework.ai.chat.prompt.Prompt;
  *
  * <h2>Agent behaviour is off by default</h2>
  * Claude Code is a coding agent; a chat model is not. Unless told otherwise this model
- * runs the CLI with all tools disabled, no settings files loaded, and a plain assistant
- * system prompt in place of the agent one — which is both what a {@code ChatModel} should
- * behave like and roughly 11k fewer input tokens per call. See
+ * runs the CLI with built-in tools, MCP connections and skills disabled, no user/project
+ * settings loaded, and a plain assistant system prompt in place of the agent one. See
  * {@link ClaudeCodeChatOptions} to opt back in.
  *
  * <pre>{@code
@@ -134,13 +133,14 @@ public class ClaudeCodeChatModel implements ChatModel {
 		}
 
 		return ClaudeCodeCliRequest.builder()
+			.isolation(options.getIsolation())
 			.prompt(rendered.userPrompt())
 			.systemPrompt(systemPrompt)
 			.appendSystemPrompt(options.getAppendSystemPrompt())
 			.model(options.getModel())
 			// Default to no tools and no settings files: a ChatModel should answer, not
 			// edit files, and its answers should not depend on the developer's personal
-			// Claude Code configuration. `tools(List.of("default"))` opts back in.
+			// Claude Code configuration. CUSTOM isolation is required to opt back in.
 			.tools((options.getTools() != null) ? options.getTools() : List.of())
 			.settingSources((options.getSettingSources() != null) ? options.getSettingSources() : List.of())
 			.effort(options.getEffort())

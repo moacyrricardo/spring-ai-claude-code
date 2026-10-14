@@ -229,7 +229,7 @@ class ProcessClaudeCodeCliTests {
 
 	private Path stub(String body) throws IOException {
 		Path script = Files.createTempFile(this.temp, "claude-stub", ".sh");
-		Files.writeString(script, "#!/bin/sh\n" + body, StandardCharsets.UTF_8);
+		Files.writeString(script, "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo '2.1.296 (Claude Code)'; exit 0; fi\n" + body, StandardCharsets.UTF_8);
 		Files.setPosixFilePermissions(script, PosixFilePermissions.fromString("rwxr-xr-x"));
 		return script;
 	}

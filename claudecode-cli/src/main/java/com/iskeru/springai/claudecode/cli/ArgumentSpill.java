@@ -101,8 +101,8 @@ final class ArgumentSpill {
 			// A system prompt may carry proprietary content: keep the file owner-only
 			// where the filesystem supports it.
 			Path file = createRestricted(flag);
-			Files.writeString(file, value, StandardCharsets.UTF_8);
 			createdFiles.add(file);
+			Files.writeString(file, value, StandardCharsets.UTF_8);
 			return file;
 		}
 		catch (IOException ex) {

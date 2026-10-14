@@ -5,6 +5,7 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 
 import com.iskeru.springai.claudecode.cli.ClaudeCodeCliRequest;
+import com.iskeru.springai.claudecode.cli.IsolationPolicy;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -24,7 +25,8 @@ class FixtureKeyTests {
 		// Pinned deliberately: a change here silently invalidates every committed fixture,
 		// so it should be a conscious decision with a re-record, not a refactoring
 		// side effect.
-		assertThat(FixtureKey.of(request().build())).isEqualTo("ae2bb972facd570fbe90051a47b8b5ac");
+		// Spec 003 intentionally migrated the legacy ae2bb... key to isolation v1.
+		assertThat(FixtureKey.of(request().build())).isEqualTo("68f19379a975b4621bcff34ec9755b3d");
 	}
 
 	@Test
@@ -46,8 +48,15 @@ class FixtureKeyTests {
 
 	@Test
 	void enablingToolsYieldsADifferentKey() {
-		assertThat(FixtureKey.of(request().tools(List.of("Read")).build()))
-			.isNotEqualTo(FixtureKey.of(request().tools(List.of()).build()));
+		assertThat(FixtureKey.of(request().isolation(IsolationPolicy.CUSTOM).tools(List.of("Read")).build()))
+			.isNotEqualTo(FixtureKey.of(request().isolation(IsolationPolicy.CUSTOM).tools(List.of()).build()));
+	}
+
+	@Test
+	void isolationSeparatesKeysFromCustomAndLegacyRequests() {
+		assertThat(FixtureKey.of(request().build())).isNotEqualTo("ae2bb972facd570fbe90051a47b8b5ac")
+			.isNotEqualTo(FixtureKey.of(request().isolation(IsolationPolicy.CUSTOM).tools(List.of())
+				.settingSources(List.of()).build()));
 	}
 
 	@Test

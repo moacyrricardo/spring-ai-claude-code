@@ -25,9 +25,9 @@ import org.springframework.context.annotation.Bean;
  * Auto-configures a {@link ClaudeCodeChatModel} backed by the local {@code claude} CLI.
  *
  * <p>
- * Intended for test slices: put it on the test classpath (or activate it with a test
- * profile) so the application's {@code ChatClient} talks to the developer's Claude Code
- * installation rather than a metered API. Every bean is
+ * Intended for test slices: disable the application's provider in a test profile so
+ * the {@code ChatClient} uses this adapter. An existing {@code ChatModel} makes this
+ * configuration back off from contributing another model. Every bean is
  * {@link ConditionalOnMissingBean @ConditionalOnMissingBean}, so any part of the chain —
  * the CLI executor, the fixture store, the conversation renderer — can be replaced by
  * declaring your own.
@@ -59,6 +59,8 @@ public class ClaudeCodeChatAutoConfiguration {
 				: ProcessClaudeCodeCli.builder()
 					.executable(properties.getExecutable())
 					.timeout(properties.getTimeout())
+					.maxStdoutBytes(properties.getMaxStdoutBytes())
+					.maxStderrBytes(properties.getMaxStderrBytes())
 					.workingDirectory(properties.getWorkingDirectory())
 					.environment(properties.getEnvironment())
 					.sessionPersistence(properties.isSessionPersistence())
@@ -78,7 +80,7 @@ public class ClaudeCodeChatAutoConfiguration {
 	}
 
 	@Bean
-	@ConditionalOnMissingBean
+	@ConditionalOnMissingBean(ChatModel.class)
 	public ClaudeCodeChatModel claudeCodeChatModel(ClaudeCodeChatProperties properties, ClaudeCodeCli cli,
 			ConversationRenderer conversationRenderer) {
 		return ClaudeCodeChatModel.builder()

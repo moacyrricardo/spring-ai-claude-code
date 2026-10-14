@@ -84,7 +84,9 @@ class ClaudeCodeChatModelTests {
 
 	@Test
 	void toolsCanBeReEnabledExplicitly() {
-		model(ClaudeCodeChatOptions.builder().tools(List.of("Read", "Grep")).build()).call(new Prompt("hi"));
+		model(ClaudeCodeChatOptions.builder()
+			.isolation(com.iskeru.springai.claudecode.cli.IsolationPolicy.CUSTOM)
+			.tools(List.of("Read", "Grep")).build()).call(new Prompt("hi"));
 
 		assertThat(this.cli.getOnlyRequest().tools()).containsExactly("Read", "Grep");
 	}

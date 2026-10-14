@@ -1,4 +1,4 @@
-Status: doing
+Status: done
 Branch: moacyrricardo/spec-003-runtime-reliability-isolation
 
 # 003 — Runtime reliability and isolation
@@ -159,6 +159,29 @@ Do not require both adapter artifacts on the same classpath.
 8. Add an offline CI matrix on Java 17 and a current supported JDK for the whole
    reactor. Run live checks explicitly, once in the 2.0 adapter, outside default CI.
 
+## Implementation Checklist
+
+Implement and review in the following order. Check items only after their regression
+tests pass; opening the draft PR does not count as implementation completion.
+
+- [x] Add core isolation policy and validation, wire both options twins and Boot
+      properties, and preserve existing construction APIs where possible.
+- [x] Add cached, bounded CLI version probing and isolated command construction;
+      cover unsupported versions, conflicting flags, and replay without a binary.
+- [x] Version fixture identity for the isolation policy, document re-recording,
+      and pin the post-migration text key consumed by spec 001.
+- [x] Add per-key AUTO single-flight coordination and deterministic concurrency,
+      failure, retry, and interrupted-follower tests.
+- [x] Harden fixture publication and temporary-file cleanup on write failures.
+- [x] Centralize process-tree cleanup, bound stdout/stderr capture, preserve pump
+      failures, and add timeout/interruption/overflow regression tests.
+- [x] Add `ChatModel` bean backoff and verify the provider-disable recipe against
+      a representative provider in both adapter generations.
+- [x] Add the Java 17/current-JDK offline CI matrix and update configuration and
+      compatibility documentation.
+- [x] Run `mvn clean verify` and the explicit live isolation/record-replay checks;
+      record results and deviations before marking the PR ready for review.
+
 ## Known Gaps
 
 - Cross-JVM and cross-instance recording coordination is deferred.
@@ -171,3 +194,62 @@ Do not require both adapter artifacts on the same classpath.
   the boundary rather than claiming OS-level containment.
 - Actual response streaming, media, OCR preprocessing, and extraction accuracy are
   handled separately; no production-throughput claim is introduced.
+
+## Implementation Notes
+
+Implemented on `moacyrricardo/spec-003-runtime-reliability-isolation`, PR #2.
+
+### API and fixture migration
+
+`IsolationPolicy` is core-owned and defaults at request construction, so an unset
+per-call option does not overwrite a configured CUSTOM default during option merge.
+The old request constructor remains as a delegating overload. ISOLATED normalizes
+null tools/settings to empty lists and a null system prompt to the plain assistant
+prompt. CUSTOM preserves intentional CLI defaults.
+
+The initial isolated extra-argument allowlist is only `--max-turns` with a positive
+integer, in split or equals form. Transport/framing flags, version/help short
+circuits, and session continuation are reserved in both policies. Fixture request
+descriptions store `v1:ISOLATED` or `v1:CUSTOM`. The pinned isolated text key is
+`68f19379a975b4621bcff34ec9755b3d`; its legacy key was
+`ae2bb972facd570fbe90051a47b8b5ac`. Existing envelopes remain directly readable,
+but the new request cannot hit that legacy key.
+
+### Process execution and recording
+
+The package-private `ProcessRunner` shares bounded concurrent stdin/stdout/stderr
+handling between version probes and completions. The first successful version
+probe is cached per executor; its timeout is the lesser of ten seconds and the
+configured call timeout. Each actual completion then has its own timeout. Cleanup
+uses a shared five-second grace, gives parents time to reap children, and retains
+primary failures and suppressed cleanup diagnostics.
+
+AUTO single-flight is scoped to one decorator, with a post-election store recheck.
+Followers wait for save completion and are marked replayed. Leader failures and
+save failures release all current followers; interrupted followers do not cancel
+the leader. Temporary fixture files are cleaned on I/O and runtime failures, and
+publication uses atomic replacement with an unsupported-filesystem fallback.
+
+### Adapter integration and compatibility checks
+
+The OpenAI starter is a test-only dependency in each adapter. Shared tests load
+real Boot auto-configuration, disable the standard provider models, and verify a
+single Claude model and a `ChatClient.Builder` that reaches the fake CLI without
+an API key. The README documents the profile switches and explicit user-bean case.
+
+The live isolation test uses the actual default command builder, switching output
+to diagnostic NDJSON only within the test to inspect initialization. It checks
+empty tools, MCP servers, and skills and a successful response; built-in plugins
+are intentionally not asserted absent. Default CI runs offline on Java 17 and 25.
+
+### Verification
+
+- Local `JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 mvn clean verify`: **186 tests
+  passed** (92 core, 47 per adapter), no failures, errors, or skips.
+- GitHub Actions run [38505677305](https://github.com/moacyrricardo/spring-ai-claude-code/actions/runs/38505677305):
+  clean checkout, **186 tests passed on each of Java 17 and Java 25**, without Claude.
+- Local `mvn test -Plive` on Java 25: **6 live tests passed**, including the default
+  isolation event check and record/replay round trip. Installed Claude Code was
+  **2.1.299**, demonstrating compatibility beyond the initially audited 2.1.296.
+- Tests ran on Linux; Windows/macOS process behavior has not been independently
+  verified in this implementation run.

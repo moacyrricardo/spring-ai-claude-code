@@ -16,6 +16,11 @@ import com.iskeru.springai.claudecode.replay.ReplayMode;
 import com.iskeru.springai.claudecode.replay.ReplayingClaudeCodeCli;
 
 import org.springframework.boot.autoconfigure.AutoConfigurations;
+import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
+import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.openai.OpenAiChatModel;
+import com.iskeru.springai.claudecode.cli.IsolationPolicy;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -47,6 +52,7 @@ class ClaudeCodeChatAutoConfigurationTests {
 			.withPropertyValues("spring.ai.claude-code.options.model=opus",
 					"spring.ai.claude-code.options.effort=high",
 					"spring.ai.claude-code.options.system-prompt=Be terse.",
+					"spring.ai.claude-code.options.isolation=custom",
 					"spring.ai.claude-code.options.tools=Read,Grep")
 			.run(context -> {
 				ClaudeCodeChatOptions options = context.getBean(ClaudeCodeChatProperties.class).getOptions();
@@ -54,6 +60,7 @@ class ClaudeCodeChatAutoConfigurationTests {
 				assertThat(options.getEffort()).isEqualTo("high");
 				assertThat(options.getSystemPrompt()).isEqualTo("Be terse.");
 				assertThat(options.getTools()).containsExactly("Read", "Grep");
+				assertThat(options.getIsolation()).isEqualTo(IsolationPolicy.CUSTOM);
 			});
 	}
 
@@ -61,12 +68,15 @@ class ClaudeCodeChatAutoConfigurationTests {
 	void bindsProcessSettings() {
 		this.runner
 			.withPropertyValues("spring.ai.claude-code.executable=/opt/claude",
-					"spring.ai.claude-code.timeout=90s", "spring.ai.claude-code.session-persistence=true")
+					"spring.ai.claude-code.timeout=90s", "spring.ai.claude-code.session-persistence=true",
+					"spring.ai.claude-code.max-stdout-bytes=2048", "spring.ai.claude-code.max-stderr-bytes=256")
 			.run(context -> {
 				ClaudeCodeChatProperties properties = context.getBean(ClaudeCodeChatProperties.class);
 				assertThat(properties.getExecutable()).isEqualTo("/opt/claude");
 				assertThat(properties.getTimeout()).isEqualTo(Duration.ofSeconds(90));
 				assertThat(properties.isSessionPersistence()).isTrue();
+				assertThat(properties.getMaxStdoutBytes()).isEqualTo(2048);
+				assertThat(properties.getMaxStderrBytes()).isEqualTo(256);
 			});
 	}
 
@@ -110,6 +120,36 @@ class ClaudeCodeChatAutoConfigurationTests {
 			assertThat(context).doesNotHaveBean(FileSystemFixtureStore.class);
 			assertThat(context.getBean(ConversationRenderer.class).render(null).userPrompt()).isEqualTo("custom");
 		});
+	}
+
+	@Test
+	void backsOffForAnExistingChatModel() {
+		ChatModel existing = prompt -> null;
+		this.runner.withBean("existingProvider", ChatModel.class, () -> existing).run(context -> {
+			assertThat(context).hasSingleBean(ChatModel.class).doesNotHaveBean(ClaudeCodeChatModel.class);
+			assertThat(context.getBean(ChatModel.class)).isSameAs(existing);
+		});
+	}
+
+	@Test
+	void explicitTestProfileDisablesTheOpenAiStarterAndUsesTheCli() {
+		new ApplicationContextRunner()
+			.withUserConfiguration(ProviderProfileConfiguration.class, CustomCliConfiguration.class)
+			.withPropertyValues("spring.ai.model.chat=none", "spring.ai.model.embedding=none",
+					"spring.ai.model.image=none", "spring.ai.model.moderation=none",
+					"spring.ai.model.audio.speech=none", "spring.ai.model.audio.transcription=none")
+			.run(context -> {
+				assertThat(context).hasNotFailed().hasSingleBean(ChatModel.class).hasSingleBean(ClaudeCodeChatModel.class)
+					.doesNotHaveBean(OpenAiChatModel.class);
+				assertThat(context.getBean(ChatClient.Builder.class).build().prompt("hi").call().content()).isEqualTo("ok");
+				assertThat(((RecordingFakeCli) context.getBean(ClaudeCodeCli.class)).getOnlyRequest().isolation())
+					.isEqualTo(IsolationPolicy.ISOLATED);
+			});
+	}
+
+	@Configuration(proxyBeanMethods = false)
+	@EnableAutoConfiguration
+	static class ProviderProfileConfiguration {
 	}
 
 	@Configuration(proxyBeanMethods = false)

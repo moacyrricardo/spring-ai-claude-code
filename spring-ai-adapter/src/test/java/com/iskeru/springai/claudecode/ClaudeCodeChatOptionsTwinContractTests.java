@@ -63,7 +63,7 @@ class ClaudeCodeChatOptionsTwinContractTests {
 		List<String> getters = List.of("getModel", "getTemperature", "getTopP", "getTopK", "getMaxTokens",
 				"getStopSequences", "getFrequencyPenalty", "getPresencePenalty", "getSystemPrompt",
 				"getAppendSystemPrompt", "getTools", "getEffort", "getFallbackModels", "getMaxBudgetUsd",
-				"getJsonSchema", "getSettingSources", "getExtraArgs");
+				"getJsonSchema", "getSettingSources", "getExtraArgs", "getIsolation");
 		assertThat(getters).allSatisfy(name -> assertThatCode(() -> ClaudeCodeChatOptions.class.getMethod(name))
 			.as("ClaudeCodeChatOptions.%s()", name)
 			.doesNotThrowAnyException());
@@ -80,6 +80,20 @@ class ClaudeCodeChatOptionsTwinContractTests {
 			.allSatisfy(name -> assertThatCode(() -> ClaudeCodeChatOptions.Builder.class.getMethod(name, List.class))
 				.as("ClaudeCodeChatOptions.Builder.%s(List)", name)
 				.doesNotThrowAnyException());
+	}
+
+	@Test
+	void isolationSurvivesCopyMutationAndMergeWithoutOverridingAnUnsetRuntimeValue() {
+		var custom = com.iskeru.springai.claudecode.cli.IsolationPolicy.CUSTOM;
+		var isolated = com.iskeru.springai.claudecode.cli.IsolationPolicy.ISOLATED;
+		var defaults = ClaudeCodeChatOptions.builder().isolation(custom).build();
+		ClaudeCodeChatOptions copied = defaults.copy();
+		assertThat(copied.getIsolation()).isEqualTo(custom);
+		assertThat(defaults.mutate().build().getIsolation()).isEqualTo(custom);
+		assertThat(ClaudeCodeChatOptions.merge(defaults, ClaudeCodeChatOptions.builder().model("sonnet").build())
+			.getIsolation()).isEqualTo(custom);
+		assertThat(ClaudeCodeChatOptions.merge(defaults, ClaudeCodeChatOptions.builder().isolation(isolated).build())
+			.getIsolation()).isEqualTo(isolated);
 	}
 
 }

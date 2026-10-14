@@ -5,6 +5,8 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 
+import com.iskeru.springai.claudecode.ClaudeCodeException;
+
 /**
  * A single non-interactive {@code claude -p} invocation, expressed in CLI terms.
  *
@@ -18,11 +20,12 @@ import java.util.Objects;
  * an argv element so that long transcripts are not subject to {@code ARG_MAX}
  * @param systemPrompt replaces Claude Code's own agent system prompt via
  * {@code --system-prompt}; this is what turns the CLI from a coding agent into a plain
- * LLM. {@code null} leaves the default agent prompt in place
+ * LLM. In ISOLATED mode null selects a plain assistant prompt; in CUSTOM it leaves
+ * the CLI's default prompt in place
  * @param appendSystemPrompt appended to whatever system prompt is in effect
  * @param model a model alias ({@code sonnet}, {@code opus}, {@code haiku}) or a full id
- * @param tools {@code null} keeps the CLI default tool set; an empty list disables all
- * tools ({@code --tools ""}), which is the right choice for a pure text completion
+ * @param tools in CUSTOM mode null keeps the CLI default built-in tool set; ISOLATED
+ * normalizes null to empty and rejects non-empty lists
  * @param effort reasoning effort: {@code low}, {@code medium}, {@code high}, {@code xhigh}
  * or {@code max}
  * @param fallbackModels models to fall back to when the primary is overloaded
@@ -30,11 +33,12 @@ import java.util.Objects;
  * @param jsonSchema a JSON Schema the response must validate against
  * @param settingSources which settings files to load; an empty list loads none, keeping
  * the invocation independent of the developer's personal Claude Code configuration
- * @param extraArgs escape hatch for CLI flags this record does not model
+ * @param extraArgs validated CLI flags this record does not model
+ * @param isolation invocation policy; null defaults to ISOLATED
  */
 public record ClaudeCodeCliRequest(String prompt, String systemPrompt, String appendSystemPrompt, String model,
 		List<String> tools, String effort, List<String> fallbackModels, Double maxBudgetUsd, String jsonSchema,
-		List<String> settingSources, List<String> extraArgs) {
+		List<String> settingSources, List<String> extraArgs, IsolationPolicy isolation) {
 
 	public ClaudeCodeCliRequest {
 		Objects.requireNonNull(prompt, "prompt must not be null");
@@ -42,6 +46,25 @@ public record ClaudeCodeCliRequest(String prompt, String systemPrompt, String ap
 		fallbackModels = (fallbackModels == null) ? List.of() : List.copyOf(fallbackModels);
 		settingSources = (settingSources == null) ? null : List.copyOf(settingSources);
 		extraArgs = (extraArgs == null) ? List.of() : List.copyOf(extraArgs);
+		isolation = (isolation == null) ? IsolationPolicy.ISOLATED : isolation;
+		if (isolation == IsolationPolicy.ISOLATED) {
+			if ((tools != null && !tools.isEmpty()) || (settingSources != null && !settingSources.isEmpty())) {
+				throw new ClaudeCodeException(
+						"Tools and settings require isolation=CUSTOM; ISOLATED calls load neither");
+			}
+			tools = List.of();
+			settingSources = List.of();
+			systemPrompt = (systemPrompt == null) ? "You are a helpful assistant." : systemPrompt;
+		}
+		RequestArguments.validate(extraArgs, isolation);
+	}
+
+	/** Source-compatible constructor; new calls default to the isolated policy. */
+	public ClaudeCodeCliRequest(String prompt, String systemPrompt, String appendSystemPrompt, String model,
+			List<String> tools, String effort, List<String> fallbackModels, Double maxBudgetUsd, String jsonSchema,
+			List<String> settingSources, List<String> extraArgs) {
+		this(prompt, systemPrompt, appendSystemPrompt, model, tools, effort, fallbackModels, maxBudgetUsd,
+				jsonSchema, settingSources, extraArgs, IsolationPolicy.ISOLATED);
 	}
 
 	public static Builder builder() {
@@ -55,6 +78,9 @@ public record ClaudeCodeCliRequest(String prompt, String systemPrompt, String ap
 	 */
 	public List<String> toArguments() {
 		List<String> args = new ArrayList<>();
+		if (this.isolation == IsolationPolicy.ISOLATED) {
+			args.addAll(List.of("--safe-mode", "--strict-mcp-config", "--disable-slash-commands"));
+		}
 		if (this.model != null) {
 			args.add("--model");
 			args.add(this.model);
@@ -120,6 +146,13 @@ public record ClaudeCodeCliRequest(String prompt, String systemPrompt, String ap
 
 		private List<String> extraArgs;
 
+		private IsolationPolicy isolation;
+
+		public Builder isolation(IsolationPolicy isolation) {
+			this.isolation = isolation;
+			return this;
+		}
+
 		public Builder prompt(String prompt) {
 			this.prompt = prompt;
 			return this;
@@ -178,7 +211,7 @@ public record ClaudeCodeCliRequest(String prompt, String systemPrompt, String ap
 		public ClaudeCodeCliRequest build() {
 			return new ClaudeCodeCliRequest(this.prompt, this.systemPrompt, this.appendSystemPrompt, this.model,
 					this.tools, this.effort, this.fallbackModels, this.maxBudgetUsd, this.jsonSchema,
-					this.settingSources, this.extraArgs);
+					this.settingSources, this.extraArgs, this.isolation);
 		}
 
 	}

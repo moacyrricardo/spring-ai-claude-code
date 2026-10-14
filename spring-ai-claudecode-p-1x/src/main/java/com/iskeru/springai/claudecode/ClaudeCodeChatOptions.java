@@ -3,6 +3,8 @@ package com.iskeru.springai.claudecode;
 import java.util.ArrayList;
 import java.util.List;
 
+import com.iskeru.springai.claudecode.cli.IsolationPolicy;
+
 import org.springframework.ai.chat.prompt.ChatOptions;
 
 /**
@@ -66,6 +68,16 @@ public class ClaudeCodeChatOptions implements ChatOptions {
 	private List<String> settingSources;
 
 	private List<String> extraArgs;
+
+	private IsolationPolicy isolation;
+
+	public IsolationPolicy getIsolation() {
+		return this.isolation;
+	}
+
+	public void setIsolation(IsolationPolicy isolation) {
+		this.isolation = isolation;
+	}
 
 	public static Builder builder() {
 		return new Builder();
@@ -225,7 +237,7 @@ public class ClaudeCodeChatOptions implements ChatOptions {
 		this.settingSources = settingSources;
 	}
 
-	/** Raw CLI flags appended verbatim, for anything not modelled above. */
+	/** Extra CLI flags, validated against the invocation policy before execution or replay. */
 	public List<String> getExtraArgs() {
 		return this.extraArgs;
 	}
@@ -259,6 +271,7 @@ public class ClaudeCodeChatOptions implements ChatOptions {
 	private static ClaudeCodeChatOptions copyOf(ClaudeCodeChatOptions source) {
 		ClaudeCodeChatOptions copy = new ClaudeCodeChatOptions();
 		copy.model = source.model;
+		copy.isolation = source.isolation;
 		copy.temperature = source.temperature;
 		copy.topP = source.topP;
 		copy.topK = source.topK;
@@ -299,6 +312,9 @@ public class ClaudeCodeChatOptions implements ChatOptions {
 		}
 		applyPortable(merged, override);
 		if (override instanceof ClaudeCodeChatOptions ours) {
+			if (ours.isolation != null) {
+				merged.isolation = ours.isolation;
+			}
 			if (ours.systemPrompt != null) {
 				merged.systemPrompt = ours.systemPrompt;
 			}
@@ -452,6 +468,11 @@ public class ClaudeCodeChatOptions implements ChatOptions {
 
 		public Builder tools(List<String> tools) {
 			this.options.tools = tools;
+			return this;
+		}
+
+		public Builder isolation(IsolationPolicy isolation) {
+			this.options.isolation = isolation;
 			return this;
 		}
 
