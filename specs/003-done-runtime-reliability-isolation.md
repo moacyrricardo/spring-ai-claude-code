@@ -1,4 +1,4 @@
-Status: doing
+Status: done
 Branch: moacyrricardo/spec-003-runtime-reliability-isolation
 
 # 003 — Runtime reliability and isolation
@@ -164,22 +164,22 @@ Do not require both adapter artifacts on the same classpath.
 Implement and review in the following order. Check items only after their regression
 tests pass; opening the draft PR does not count as implementation completion.
 
-- [ ] Add core isolation policy and validation, wire both options twins and Boot
+- [x] Add core isolation policy and validation, wire both options twins and Boot
       properties, and preserve existing construction APIs where possible.
-- [ ] Add cached, bounded CLI version probing and isolated command construction;
+- [x] Add cached, bounded CLI version probing and isolated command construction;
       cover unsupported versions, conflicting flags, and replay without a binary.
-- [ ] Version fixture identity for the isolation policy, document re-recording,
+- [x] Version fixture identity for the isolation policy, document re-recording,
       and pin the post-migration text key consumed by spec 001.
-- [ ] Add per-key AUTO single-flight coordination and deterministic concurrency,
+- [x] Add per-key AUTO single-flight coordination and deterministic concurrency,
       failure, retry, and interrupted-follower tests.
-- [ ] Harden fixture publication and temporary-file cleanup on write failures.
-- [ ] Centralize process-tree cleanup, bound stdout/stderr capture, preserve pump
+- [x] Harden fixture publication and temporary-file cleanup on write failures.
+- [x] Centralize process-tree cleanup, bound stdout/stderr capture, preserve pump
       failures, and add timeout/interruption/overflow regression tests.
-- [ ] Add `ChatModel` bean backoff and verify the provider-disable recipe against
+- [x] Add `ChatModel` bean backoff and verify the provider-disable recipe against
       a representative provider in both adapter generations.
-- [ ] Add the Java 17/current-JDK offline CI matrix and update configuration and
+- [x] Add the Java 17/current-JDK offline CI matrix and update configuration and
       compatibility documentation.
-- [ ] Run `mvn clean verify` and the explicit live isolation/record-replay checks;
+- [x] Run `mvn clean verify` and the explicit live isolation/record-replay checks;
       record results and deviations before marking the PR ready for review.
 
 ## Known Gaps
@@ -241,3 +241,15 @@ The live isolation test uses the actual default command builder, switching outpu
 to diagnostic NDJSON only within the test to inspect initialization. It checks
 empty tools, MCP servers, and skills and a successful response; built-in plugins
 are intentionally not asserted absent. Default CI runs offline on Java 17 and 25.
+
+### Verification
+
+- Local `JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 mvn clean verify`: **186 tests
+  passed** (92 core, 47 per adapter), no failures, errors, or skips.
+- GitHub Actions run [38505677305](https://github.com/moacyrricardo/spring-ai-claude-code/actions/runs/38505677305):
+  clean checkout, **186 tests passed on each of Java 17 and Java 25**, without Claude.
+- Local `mvn test -Plive` on Java 25: **6 live tests passed**, including the default
+  isolation event check and record/replay round trip. Installed Claude Code was
+  **2.1.299**, demonstrating compatibility beyond the initially audited 2.1.296.
+- Tests ran on Linux; Windows/macOS process behavior has not been independently
+  verified in this implementation run.
