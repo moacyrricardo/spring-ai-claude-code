@@ -90,6 +90,7 @@ class FileSystemFixtureStoreTests {
 		String contents = Files.readString(file);
 
 		assertThat(contents).contains("\"key\" : \"" + key + "\"")
+			.contains("\"isolation\" : \"v1:ISOLATED\"")
 			.contains("\"prompt\" : \"What is 2 + 2?\"")
 			.contains("\"model\" : \"sonnet\"")
 			.contains("\"result\" : \"4\"");
@@ -121,6 +122,37 @@ class FileSystemFixtureStoreTests {
 
 		assertThatThrownBy(() -> store().load(key)).isInstanceOf(ClaudeCodeException.class)
 			.hasMessageContaining("no `response` field");
+	}
+
+	@Test
+	void failedPublicationCleansUpTheTemporaryFile() throws Exception {
+		String key = FixtureKey.of(this.request);
+		Path destination = this.fixtures.resolve(FixtureKey.fileName(this.request, key));
+		Files.createDirectories(destination);
+		Files.writeString(destination.resolve("occupied"), "cannot replace this directory");
+		assertThatThrownBy(() -> store().save(key, this.request, response("4")))
+			.isInstanceOf(ClaudeCodeException.class).hasMessageContaining("Could not write fixture");
+		assertThat(this.fixtures).isDirectoryNotContaining(path -> path.getFileName().toString().endsWith(".tmp"));
+	}
+
+	@Test
+	void legacyEnvelopeRemainsReadableButCannotSatisfyANewIsolatedRequest() throws Exception {
+		String legacyKey = "ae2bb972facd570fbe90051a47b8b5ac";
+		Files.writeString(this.fixtures.resolve(legacyKey + ".json"),
+				"{\"key\":\"" + legacyKey + "\",\"response\":{\"result\":\"legacy\"}}");
+		assertThat(store().load(legacyKey).orElseThrow().result()).isEqualTo("legacy");
+		var isolated = ClaudeCodeCliRequest.builder().prompt("What is 2 + 2?").model("sonnet").systemPrompt("Be terse.").build();
+		var replay = ReplayingClaudeCodeCli.builder().store(store()).mode(ReplayMode.REPLAY).build();
+		assertThatThrownBy(() -> replay.execute(isolated)).hasMessageContaining("No recorded");
+	}
+
+	@Test
+	void corruptFixtureInAutoNeverCallsTheDelegate() throws Exception {
+		String key = FixtureKey.of(this.request);
+		Files.writeString(this.fixtures.resolve(key + ".json"), "{broken");
+		var auto = ReplayingClaudeCodeCli.builder().store(store()).mode(ReplayMode.AUTO)
+			.delegate(r -> { throw new AssertionError("must not re-record corrupt data"); }).build();
+		assertThatThrownBy(() -> auto.execute(this.request)).isInstanceOf(ClaudeCodeException.class);
 	}
 
 }

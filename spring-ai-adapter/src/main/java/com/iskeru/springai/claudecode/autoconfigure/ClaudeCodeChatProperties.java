@@ -34,6 +34,26 @@ public class ClaudeCodeChatProperties {
 	/** Maximum wall-clock time for a single CLI invocation. */
 	private Duration timeout = Duration.ofMinutes(5);
 
+	private int maxStdoutBytes = 16 * 1024 * 1024;
+
+	private int maxStderrBytes = 64 * 1024;
+
+	public int getMaxStdoutBytes() {
+		return this.maxStdoutBytes;
+	}
+
+	public void setMaxStdoutBytes(int maxStdoutBytes) {
+		this.maxStdoutBytes = maxStdoutBytes;
+	}
+
+	public int getMaxStderrBytes() {
+		return this.maxStderrBytes;
+	}
+
+	public void setMaxStderrBytes(int maxStderrBytes) {
+		this.maxStderrBytes = maxStderrBytes;
+	}
+
 	/** Directory the CLI process runs in. Defaults to the JVM's working directory. */
 	private Path workingDirectory;
 

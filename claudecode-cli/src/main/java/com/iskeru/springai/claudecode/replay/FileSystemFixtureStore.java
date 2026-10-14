@@ -7,6 +7,7 @@ import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
@@ -83,6 +84,7 @@ public class FileSystemFixtureStore implements FixtureStore {
 	@Override
 	public void save(String key, ClaudeCodeCliRequest request, ClaudeCodeCliResponse response) {
 		Path file = this.directory.resolve(FixtureKey.fileName(request, key));
+		Path temp = null;
 		try {
 			Files.createDirectories(this.directory);
 
@@ -93,15 +95,28 @@ public class FileSystemFixtureStore implements FixtureStore {
 
 			// Write-then-move so a crash mid-write cannot leave a truncated fixture that
 			// would later replay as a corrupt response.
-			Path temp = Files.createTempFile(this.directory, file.getFileName().toString(), ".tmp");
+			temp = Files.createTempFile(this.directory, file.getFileName().toString(), ".tmp");
 			Files.writeString(temp, this.objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(fixture),
 					StandardCharsets.UTF_8);
-			Files.move(temp, file, StandardCopyOption.REPLACE_EXISTING);
+			try {
+				Files.move(temp, file, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+			}
+			catch (AtomicMoveNotSupportedException ex) {
+				Files.move(temp, file, StandardCopyOption.REPLACE_EXISTING);
+			}
 
 			// A key can only ever map to one slug, so stale entries are impossible here.
 			this.pathsByKey.put(key, file);
 		}
-		catch (IOException ex) {
+		catch (IOException | RuntimeException ex) {
+			if (temp != null) {
+				try {
+					Files.deleteIfExists(temp);
+				}
+				catch (IOException cleanup) {
+					ex.addSuppressed(cleanup);
+				}
+			}
 			throw new ClaudeCodeException("Could not write fixture " + file, ex);
 		}
 	}
@@ -153,6 +168,7 @@ public class FileSystemFixtureStore implements FixtureStore {
 		described.put("jsonSchema", request.jsonSchema());
 		described.put("settingSources", request.settingSources());
 		described.put("extraArgs", request.extraArgs());
+		described.put("isolation", request.isolation().fixtureIdentity());
 		return described;
 	}
 

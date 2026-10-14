@@ -194,3 +194,50 @@ tests pass; opening the draft PR does not count as implementation completion.
   the boundary rather than claiming OS-level containment.
 - Actual response streaming, media, OCR preprocessing, and extraction accuracy are
   handled separately; no production-throughput claim is introduced.
+
+## Implementation Notes
+
+Implemented on `moacyrricardo/spec-003-runtime-reliability-isolation`, PR #2.
+
+### API and fixture migration
+
+`IsolationPolicy` is core-owned and defaults at request construction, so an unset
+per-call option does not overwrite a configured CUSTOM default during option merge.
+The old request constructor remains as a delegating overload. ISOLATED normalizes
+null tools/settings to empty lists and a null system prompt to the plain assistant
+prompt. CUSTOM preserves intentional CLI defaults.
+
+The initial isolated extra-argument allowlist is only `--max-turns` with a positive
+integer, in split or equals form. Transport/framing flags, version/help short
+circuits, and session continuation are reserved in both policies. Fixture request
+descriptions store `v1:ISOLATED` or `v1:CUSTOM`. The pinned isolated text key is
+`68f19379a975b4621bcff34ec9755b3d`; its legacy key was
+`ae2bb972facd570fbe90051a47b8b5ac`. Existing envelopes remain directly readable,
+but the new request cannot hit that legacy key.
+
+### Process execution and recording
+
+The package-private `ProcessRunner` shares bounded concurrent stdin/stdout/stderr
+handling between version probes and completions. The first successful version
+probe is cached per executor; its timeout is the lesser of ten seconds and the
+configured call timeout. Each actual completion then has its own timeout. Cleanup
+uses a shared five-second grace, gives parents time to reap children, and retains
+primary failures and suppressed cleanup diagnostics.
+
+AUTO single-flight is scoped to one decorator, with a post-election store recheck.
+Followers wait for save completion and are marked replayed. Leader failures and
+save failures release all current followers; interrupted followers do not cancel
+the leader. Temporary fixture files are cleaned on I/O and runtime failures, and
+publication uses atomic replacement with an unsupported-filesystem fallback.
+
+### Adapter integration and compatibility checks
+
+The OpenAI starter is a test-only dependency in each adapter. Shared tests load
+real Boot auto-configuration, disable the standard provider models, and verify a
+single Claude model and a `ChatClient.Builder` that reaches the fake CLI without
+an API key. The README documents the profile switches and explicit user-bean case.
+
+The live isolation test uses the actual default command builder, switching output
+to diagnostic NDJSON only within the test to inspect initialization. It checks
+empty tools, MCP servers, and skills and a successful response; built-in plugins
+are intentionally not asserted absent. Default CI runs offline on Java 17 and 25.

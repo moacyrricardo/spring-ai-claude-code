@@ -17,8 +17,9 @@ processes the machine will tolerate.
 
 - Java 17+
 - Spring AI 2.0.x **or** 1.1.x — one adapter per generation, see Coordinates
-- Claude Code installed and authenticated (`claude --version`) — except in `replay` mode,
-  which needs neither
+- Claude Code **2.1.296+**, installed and authenticated (`claude --version`) — except in
+  `replay` mode, which needs neither. Live execution probes the version once per executor;
+  an older or unrecognized version fails rather than dropping isolation flags.
 
 ## Coordinates
 
@@ -82,8 +83,7 @@ String answer = model.call("What is 2 + 2?");
 ```
 
 Or let Boot wire it. Put the jar on the test classpath and the auto-configuration
-contributes a `ClaudeCodeChatModel` (and therefore a `ChatClient`) that the code under
-test uses in place of the real provider:
+contributes a `ClaudeCodeChatModel` when no other `ChatModel` bean is declared:
 
 ```properties
 spring.ai.claude-code.options.model=sonnet
@@ -91,6 +91,38 @@ spring.ai.claude-code.options.model=sonnet
 
 Every bean is `@ConditionalOnMissingBean`, so declaring your own `ClaudeCodeCli`,
 `FixtureStore`, or `ConversationRenderer` replaces the corresponding default.
+
+### Replacing an application's provider in tests
+
+Adding this dependency does not automatically replace a provider starter or an explicitly
+declared model. Disable the application's normal provider in the test profile and let this
+adapter supply the single `ChatModel`. For applications using the OpenAI starter, this
+recipe is tested against both Spring AI 2.0 / Boot 4.1 and Spring AI 1.1 / Boot 3.5:
+
+```properties
+# src/test/resources/application-claude-test.properties
+spring.ai.model.chat=none
+spring.ai.claude-code.enabled=true
+spring.ai.claude-code.options.model=sonnet
+spring.ai.claude-code.replay.mode=replay
+spring.ai.claude-code.replay.directory=src/test/resources/claude-fixtures
+```
+
+Activate it with `@ActiveProfiles("claude-test")`. The `spring.ai.model.chat=none` switch
+disables the standard provider chat auto-configuration; this adapter uses its own enable
+property. Provider settings for embeddings, images, and audio are separate. If the test
+also disables those models, set the corresponding `spring.ai.model.embedding`, `image`,
+`moderation`, `audio.speech`, and `audio.transcription` properties to `none`.
+
+Use the auto-configured `ChatClient.Builder`, or explicitly select the model:
+
+```java
+ChatClient client = ChatClient.builder(context.getBean(ClaudeCodeChatModel.class)).build();
+```
+
+If the application declares its model with `@Bean`, exclude that bean configuration in
+this test profile. The adapter backs off for any existing `ChatModel`. Applications using
+another provider must verify its disable switch; do not rely on auto-configuration order.
 
 ## Record and replay
 
@@ -136,12 +168,31 @@ request and the CLI's untouched response envelope:
 
 They are meant to be committed: a changed prompt appears in review as a readable diff.
 
-The key is a SHA-256 over everything that can change the answer — model, system prompt,
-user prompt, tools, effort, JSON schema, setting sources, extra args. `maxBudgetUsd` is
+The key is a truncated SHA-256 over the modeled semantic inputs — model, system prompt,
+user prompt, tools, effort, JSON schema, setting sources, extra args, and the versioned
+isolation policy. `maxBudgetUsd` is
 deliberately excluded, since a spend guard is not a semantic input.
 
 A replayed response carries `replayed=true` in its generation metadata. Its `usage` and
 `totalCostUsd` describe the original recording, not the replay, which cost nothing.
+
+**Isolation migration (spec 003):** request identity now includes `v1:ISOLATED` or
+`v1:CUSTOM`, and direct-core isolated requests normalize tools/settings to empty lists and
+use a plain default system prompt. Previously recorded keys intentionally miss. Re-record
+with `record` or `auto`, review and commit the replacement fixtures, then return CI to
+`replay`. Old JSON envelopes remain readable, but are not silently reused under the new
+policy. Changing only the subsequent media implementation will not change text-only keys.
+
+**Concurrent AUTO calls:** within one `ReplayingClaudeCodeCli` instance, concurrent misses
+for the same key share one delegate execution and wait for its fixture to be saved. The
+leader is live; followers carry `replayed=true`. Distinct keys can execute concurrently.
+An interrupted follower does not cancel the leader. Recording/save failures reach all
+current waiters, and later calls can retry. RECORD still calls the delegate every time.
+Share one decorator per recording directory; coordination does not span wrappers or JVMs.
+
+Fixtures are published by atomic replacement where supported, with a regular replacement
+fallback on other filesystems. Failed writes clean up their temporary files. Corrupt
+fixtures are errors, including in AUTO; they never trigger a silent live re-record.
 
 ## When replay pays
 
@@ -202,16 +253,34 @@ LLM. Nearly all of them are the former.
 Claude Code is a coding agent; a `ChatModel` is not. Unless told otherwise this model runs
 the CLI with:
 
-- `--tools ""` — no file editing, no shell, no web access
-- `--setting-sources ""` — no `CLAUDE.md`, hooks, or personal configuration bleeding into
-  answers
+- `--tools ""` — disable built-in tools
+- `--setting-sources ""` — disable user/project/local settings sources
+- `--safe-mode --strict-mcp-config --disable-slash-commands` — disable customizations,
+  account/project MCP connections, and skills; the live compatibility test verifies
+  empty tool, MCP-server, and skill lists
 - `--system-prompt "You are a helpful assistant."` — replacing the agent system prompt
 
-That last one is not just about behaviour: the default agent prompt costs roughly 11k input
-tokens per call, versus about 185 for a plain completion.
+This keeps calls smaller and more predictable. Built-in plugins can still be listed, and
+administrator policy and inherited environment remain outside this guarantee. Token counts
+vary with CLI/model versions. `--bare` is not used because it disables subscription OAuth.
 
 A `SystemMessage` in the `Prompt` overrides the configured system prompt. To opt back into
-tools, name them (`tools: Read,Grep`) or use the CLI's own catch-all (`tools: default`).
+tools/settings, explicitly select CUSTOM and name the tools:
+
+```properties
+spring.ai.claude-code.options.isolation=custom
+spring.ai.claude-code.options.tools=Read,Grep
+```
+
+Standalone callers use `.isolation(IsolationPolicy.CUSTOM)` on the options or request
+builder. CUSTOM permits external context, so record/replay cannot identify changes to
+tool results or other ambient inputs. Model aliases can also move; pin a full model ID
+when comparing results across model versions.
+
+ISOLATED extra arguments allow only `--max-turns N` or `--max-turns=N`, with a positive
+integer. Unknown flags require CUSTOM. Both policies reserve transport/output and session
+continuation flags (including `--verbose`, `--input-format`, `--output-format`, `--resume`,
+and `--continue`); pass modeled values through their setters rather than overriding flags.
 
 ## Configuration
 
@@ -220,12 +289,15 @@ tools, name them (`tools: Read,Grep`) or use the CLI's own catch-all (`tools: de
 | `spring.ai.claude-code.enabled`               | `true`                              |
 | `spring.ai.claude-code.executable`            | `claude`                            |
 | `spring.ai.claude-code.timeout`               | `5m`                                |
+| `spring.ai.claude-code.max-stdout-bytes`      | `16777216` (16 MiB)                  |
+| `spring.ai.claude-code.max-stderr-bytes`      | `65536` (64 KiB tail)                |
 | `spring.ai.claude-code.working-directory`     | JVM working directory               |
 | `spring.ai.claude-code.session-persistence`   | `false`                             |
 | `spring.ai.claude-code.environment.*`         | —                                   |
 | `spring.ai.claude-code.replay.mode`           | `live`                              |
 | `spring.ai.claude-code.replay.directory`      | `src/test/resources/claude-fixtures`|
 | `spring.ai.claude-code.options.model`         | CLI default                         |
+| `spring.ai.claude-code.options.isolation`     | `isolated`                          |
 | `spring.ai.claude-code.options.system-prompt` | `You are a helpful assistant.`      |
 | `spring.ai.claude-code.options.tools`         | none                                |
 | `spring.ai.claude-code.options.effort`        | CLI default                         |
@@ -237,6 +309,16 @@ tools, name them (`tools: Read,Grep`) or use the CLI's own catch-all (`tools: de
 ## Limitations
 
 Worth knowing before you write assertions against this.
+
+- **Timeout cleanup has a bounded grace.** Each model call has its configured timeout;
+  the first call also performs a version probe bounded by the lesser of 10 seconds and
+  that timeout. Abnormal termination stops known descendants and the parent, closes pipes,
+  and allows at most five additional seconds for cleanup. Already detached/reparented
+  processes cannot be guaranteed across operating systems.
+- **Output capture is bounded.** Stdout overflow fails and cleans up the process; stderr
+  retains a marked tail. Stream-read failures surface as errors instead of empty answers.
+- **PDF/image attachments are not implemented yet.** They fail explicitly; spec 001 is
+  the next implementation step. Existing OCR text can already use the text path.
 
 - **Sampling parameters do not work.** `temperature`, `topP`, `topK`, `maxTokens`,
   `stopSequences`, `frequencyPenalty` and `presencePenalty` can be set — they are part of
@@ -254,10 +336,10 @@ Worth knowing before you write assertions against this.
   `ConversationRenderer` if your assertions need a different shape.
 - **Process overhead.** Expect a few hundred milliseconds of startup per call on top of
   inference — one more reason to replay in CI.
-- **Prompt size is bounded by the model, not the command line.** The prompt travels on the
-  CLI's stdin, so it is not subject to any `argv` limit — verified at 100 KB against the
-  real binary and at 512 KiB through the process plumbing. The ceiling is the model's
-  context window and the configured timeout. Note that a large prompt is expensive live
+- **Prompt size avoids command-line limits.** The prompt travels on the CLI's stdin —
+  verified at 100 KB against the real binary and at 512 KiB through the process plumbing.
+  The CLI's own input limit (currently documented as 10 MB for piped text), the model's
+  context window, and the configured timeout still apply. A large prompt is expensive live
   (100 KB cost $0.15 in one call), which is exactly where `replay` earns its keep.
 - **Options that become command-line flags are bounded.** Linux caps a single `argv` entry
   at 128 KiB. A `systemPrompt` or `appendSystemPrompt` above 64 KiB is therefore written
@@ -294,6 +376,10 @@ mvn -pl spring-ai-claudecode-p-1x -am test
 
 `-Plive` tests live in `spring-ai-claudecode-p` only: shared test sources compile into both
 adapters, so putting them there would spend subscription usage twice per run.
+
+GitHub Actions runs the offline reactor on Java 17 and Java 25. Live tests remain an
+explicit local operation; they include inspection of the CLI's initialization event to
+check isolation on the installed version.
 
 ## Design
 

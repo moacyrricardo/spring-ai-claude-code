@@ -1,9 +1,6 @@
 package com.iskeru.springai.claudecode.cli;
 
 import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -11,8 +8,8 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicReference;
+import java.util.Objects;
+import java.util.regex.Pattern;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -30,12 +27,9 @@ public class ProcessClaudeCodeCli implements ClaudeCodeCli {
 
 	private static final Duration DEFAULT_TIMEOUT = Duration.ofMinutes(5);
 
-	/**
-	 * How long to wait for the stdout/stderr pumps to finish after the process has exited.
-	 * They are draining an already-closed pipe at that point, so this only guards against
-	 * a pathological hang.
-	 */
-	private static final Duration PUMP_DRAIN_GRACE = Duration.ofSeconds(10);
+	public static final String MINIMUM_CLI_VERSION = "2.1.296";
+
+	private static final Pattern VERSION = Pattern.compile("^(\\d+)\\.(\\d+)\\.(\\d+)(?: \\(Claude Code\\))?$");
 
 	/**
 	 * Arguments at or above this many bytes are written to a temporary file instead of
@@ -58,6 +52,12 @@ public class ProcessClaudeCodeCli implements ClaudeCodeCli {
 
 	private final int argumentSpillThreshold;
 
+	private final int maxStdoutBytes;
+
+	private final int maxStderrBytes;
+
+	private volatile String verifiedVersion;
+
 	protected ProcessClaudeCodeCli(Builder builder) {
 		this.executable = builder.executable;
 		this.timeout = builder.timeout;
@@ -66,6 +66,8 @@ public class ProcessClaudeCodeCli implements ClaudeCodeCli {
 		this.sessionPersistence = builder.sessionPersistence;
 		this.objectMapper = builder.objectMapper;
 		this.argumentSpillThreshold = builder.argumentSpillThreshold;
+		this.maxStdoutBytes = builder.maxStdoutBytes;
+		this.maxStderrBytes = builder.maxStderrBytes;
 	}
 
 	public static Builder builder() {
@@ -74,6 +76,8 @@ public class ProcessClaudeCodeCli implements ClaudeCodeCli {
 
 	@Override
 	public ClaudeCodeCliResponse execute(ClaudeCodeCliRequest request) {
+		Objects.requireNonNull(request, "request");
+		verifyVersion();
 		List<Path> spillFiles = new ArrayList<>();
 		try {
 			return execute(request, spillFiles);
@@ -92,7 +96,49 @@ public class ProcessClaudeCodeCli implements ClaudeCodeCli {
 
 	private ClaudeCodeCliResponse execute(ClaudeCodeCliRequest request, List<Path> spillFiles) {
 		List<String> command = ArgumentSpill.apply(buildCommand(request), this.argumentSpillThreshold, spillFiles);
+		ProcessRunner.Result result = run(command, request.prompt(), this.timeout, this.maxStdoutBytes);
+		ClaudeCodeCliResponse response = ClaudeCodeCliResponse.fromJson(result.stdout(), this.objectMapper);
+		if (response.error()) {
+			throw new ClaudeCodeException("The Claude Code CLI reported an error (api_error_status=%s): %s"
+				.formatted(response.apiErrorStatus(), response.result()));
+		}
+		return response;
+	}
 
+	/** Cached per executor; replay never calls this method. */
+	public String verifyVersion() {
+		if (this.verifiedVersion != null) {
+			return this.verifiedVersion;
+		}
+		synchronized (this) {
+			if (this.verifiedVersion != null) {
+				return this.verifiedVersion;
+			}
+			Duration probeTimeout = this.timeout.compareTo(Duration.ofSeconds(10)) < 0 ? this.timeout : Duration.ofSeconds(10);
+			String detected = run(List.of(this.executable, "--version"), "", probeTimeout, 4096).stdout().strip();
+			var matcher = VERSION.matcher(detected);
+			boolean supported = false;
+			if (matcher.matches()) {
+				try {
+					int major = Integer.parseInt(matcher.group(1));
+					int minor = Integer.parseInt(matcher.group(2));
+					int patch = Integer.parseInt(matcher.group(3));
+					supported = major > 2 || (major == 2 && (minor > 1 || (minor == 1 && patch >= 296)));
+				}
+				catch (NumberFormatException ignored) {
+					// Treat an unrecognizable numeric version as unsupported.
+				}
+			}
+			if (!supported) {
+				throw new ClaudeCodeException("Unsupported Claude Code CLI version '" + detected + "'; upgrade to "
+						+ MINIMUM_CLI_VERSION + " or newer. Isolation flags will not be dropped.");
+			}
+			this.verifiedVersion = detected;
+			return detected;
+		}
+	}
+
+	private ProcessRunner.Result run(List<String> command, String input, Duration limit, int stdoutLimit) {
 		ProcessBuilder processBuilder = new ProcessBuilder(command);
 		if (this.workingDirectory != null) {
 			processBuilder.directory(this.workingDirectory.toFile());
@@ -107,60 +153,12 @@ public class ProcessClaudeCodeCli implements ClaudeCodeCli {
 			throw new ClaudeCodeException(startFailureMessage(command, ex), ex);
 		}
 
-		AtomicReference<String> stdout = new AtomicReference<>("");
-		AtomicReference<String> stderr = new AtomicReference<>("");
-		AtomicReference<IOException> stdinFailure = new AtomicReference<>();
-
-		// All three streams are pumped concurrently: a large prompt can fill the stdin
-		// pipe buffer before the CLI starts reading, and a chatty stderr can fill its
-		// buffer before we get to stdout — either would deadlock a single-threaded read.
-		Thread stdinPump = daemon("claude-cli-stdin", () -> {
-			try (OutputStream in = process.getOutputStream()) {
-				in.write(request.prompt().getBytes(StandardCharsets.UTF_8));
-			}
-			catch (IOException ex) {
-				stdinFailure.set(ex);
-			}
-		});
-		Thread stdoutPump = daemon("claude-cli-stdout", () -> stdout.set(drain(process.getInputStream())));
-		Thread stderrPump = daemon("claude-cli-stderr", () -> stderr.set(drain(process.getErrorStream())));
-
-		boolean exited;
-		try {
-			exited = process.waitFor(this.timeout.toMillis(), TimeUnit.MILLISECONDS);
-			if (!exited) {
-				process.destroyForcibly();
-				throw new ClaudeCodeException("The Claude Code CLI did not finish within %s. Command: %s"
-					.formatted(this.timeout, String.join(" ", command)));
-			}
-			// The pipes are closed now; these joins just collect what is already buffered.
-			stdoutPump.join(PUMP_DRAIN_GRACE.toMillis());
-			stderrPump.join(PUMP_DRAIN_GRACE.toMillis());
-			stdinPump.join(PUMP_DRAIN_GRACE.toMillis());
-		}
-		catch (InterruptedException ex) {
-			process.destroyForcibly();
-			Thread.currentThread().interrupt();
-			throw new ClaudeCodeException("Interrupted while waiting for the Claude Code CLI", ex);
-		}
-
-		if (stdinFailure.get() != null && stdout.get().isBlank()) {
-			throw new ClaudeCodeException("Failed to write the prompt to the Claude Code CLI's stdin",
-					stdinFailure.get());
-		}
-
-		int exitCode = process.exitValue();
-		if (exitCode != 0) {
+		ProcessRunner.Result result = ProcessRunner.run(process, input, limit, stdoutLimit, this.maxStderrBytes);
+		if (result.exitCode() != 0) {
 			throw new ClaudeCodeException("The Claude Code CLI exited with code %d.%nCommand: %s%nstderr: %s%nstdout: %s"
-				.formatted(exitCode, String.join(" ", command), stderr.get().strip(), stdout.get().strip()));
+				.formatted(result.exitCode(), String.join(" ", command), result.stderr().strip(), result.stdout().strip()));
 		}
-
-		ClaudeCodeCliResponse response = ClaudeCodeCliResponse.fromJson(stdout.get(), this.objectMapper);
-		if (response.error()) {
-			throw new ClaudeCodeException("The Claude Code CLI reported an error (api_error_status=%s): %s"
-				.formatted(response.apiErrorStatus(), response.result()));
-		}
-		return response;
+		return result;
 	}
 
 	/**
@@ -193,22 +191,6 @@ public class ProcessClaudeCodeCli implements ClaudeCodeCli {
 		return command;
 	}
 
-	private static Thread daemon(String name, Runnable body) {
-		Thread thread = new Thread(body, name);
-		thread.setDaemon(true);
-		thread.start();
-		return thread;
-	}
-
-	private static String drain(InputStream stream) {
-		try (stream) {
-			return new String(stream.readAllBytes(), StandardCharsets.UTF_8);
-		}
-		catch (IOException ex) {
-			return "";
-		}
-	}
-
 	public static final class Builder {
 
 		private String executable = "claude";
@@ -224,6 +206,20 @@ public class ProcessClaudeCodeCli implements ClaudeCodeCli {
 		private ObjectMapper objectMapper = new ObjectMapper();
 
 		private int argumentSpillThreshold = DEFAULT_ARGUMENT_SPILL_THRESHOLD;
+
+		private int maxStdoutBytes = 16 * 1024 * 1024;
+
+		private int maxStderrBytes = 64 * 1024;
+
+		public Builder maxStdoutBytes(int bytes) {
+			this.maxStdoutBytes = bytes;
+			return this;
+		}
+
+		public Builder maxStderrBytes(int bytes) {
+			this.maxStderrBytes = bytes;
+			return this;
+		}
 
 		/**
 		 * Path to (or name of) the {@code claude} binary. Defaults to {@code claude},
@@ -281,6 +277,17 @@ public class ProcessClaudeCodeCli implements ClaudeCodeCli {
 		}
 
 		public ProcessClaudeCodeCli build() {
+			if (this.executable == null || this.executable.isBlank()) {
+				throw new IllegalArgumentException("executable must not be blank");
+			}
+			Objects.requireNonNull(this.objectMapper, "objectMapper");
+			if (this.timeout == null || this.timeout.isNegative() || this.timeout.isZero()) {
+				throw new IllegalArgumentException("timeout must be positive");
+			}
+			this.timeout.toNanos(); // Reject durations too large for monotonic deadline arithmetic.
+			if (this.argumentSpillThreshold <= 0 || this.maxStdoutBytes <= 0 || this.maxStderrBytes <= 0) {
+				throw new IllegalArgumentException("argumentSpillThreshold, maxStdoutBytes and maxStderrBytes must be positive");
+			}
 			return new ProcessClaudeCodeCli(this);
 		}
 
