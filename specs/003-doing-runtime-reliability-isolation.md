@@ -159,6 +159,29 @@ Do not require both adapter artifacts on the same classpath.
 8. Add an offline CI matrix on Java 17 and a current supported JDK for the whole
    reactor. Run live checks explicitly, once in the 2.0 adapter, outside default CI.
 
+## Implementation Checklist
+
+Implement and review in the following order. Check items only after their regression
+tests pass; opening the draft PR does not count as implementation completion.
+
+- [ ] Add core isolation policy and validation, wire both options twins and Boot
+      properties, and preserve existing construction APIs where possible.
+- [ ] Add cached, bounded CLI version probing and isolated command construction;
+      cover unsupported versions, conflicting flags, and replay without a binary.
+- [ ] Version fixture identity for the isolation policy, document re-recording,
+      and pin the post-migration text key consumed by spec 001.
+- [ ] Add per-key AUTO single-flight coordination and deterministic concurrency,
+      failure, retry, and interrupted-follower tests.
+- [ ] Harden fixture publication and temporary-file cleanup on write failures.
+- [ ] Centralize process-tree cleanup, bound stdout/stderr capture, preserve pump
+      failures, and add timeout/interruption/overflow regression tests.
+- [ ] Add `ChatModel` bean backoff and verify the provider-disable recipe against
+      a representative provider in both adapter generations.
+- [ ] Add the Java 17/current-JDK offline CI matrix and update configuration and
+      compatibility documentation.
+- [ ] Run `mvn clean verify` and the explicit live isolation/record-replay checks;
+      record results and deviations before marking the PR ready for review.
+
 ## Known Gaps
 
 - Cross-JVM and cross-instance recording coordination is deferred.
