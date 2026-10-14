@@ -1,3 +1,6 @@
+Status: doing
+Branch: moacyrricardo/spec-003-runtime-reliability-isolation
+
 # 003 — Runtime reliability and isolation
 
 ## Context
